@@ -99,16 +99,30 @@ budget**, not by federation.
    death. `--gpu-fraction 0.5` is **not** implicated — the documented 0.33 host-memory
    failure is a separate, real measurement and still stands.
 
+## Measured this session, after the code landed
+
+**The floor is ±0.0077, not ±0.0018.** Re-measured at the same conditions on the fixed
+transport: seeds 0/1/2 scored **0.2135 / 0.2207 / 0.2289**, mean 0.2210, max−min 0.0154.
+Still a lower bound at n=3. Every lever above has to clear 0.0077.
+
+**The old floor's three arms are irreproducible** — 0.1193 / 0.1157 / 0.1186 then against
+those three now, no overlap, a systematic ≈ +0.10 that the transport fix does **not**
+explain (it measures +0.0042 on a controlled single-client comparison). Unattributed, and
+recorded that way. Aug-16 runs at this budget scored 0.2073 and 0.2097 — where today's arms
+sit — so the five Sept-2 `random` runs are the outliers.
+
+**And the B4 guard was reading a three-week-old log.** `paths.log_dirs()` did not include
+`pipeline/vehicles/logs`, which is where a federation's server log goes (it follows
+`FL_AV_DATA_ROOT`, not the package). So `federation_learned()` returned PASS from Sept 2's
+checksums for every run since the fleet existed — inert in the direction that passes. Fixed,
+with a general test that no federation log may sit outside the searched directories.
+
 ## Next action
 
-1. **Measure, in this order.** Everything above is implemented and unmeasured. The floor
-   was ±0.0018 at 2 × 1 IID, and items that change the transport and the resolution
-   re-open it, so **re-measure the seed spread first**:
-   `python -m pipeline.experiment --preset seeds --seeds 0,1,2 --yes`
-2. `--imgsz 1024` at 6 × 4. Largest expected effect, touches no data, and the baseline and
+1. `--imgsz 1024` at 6 × 4. Largest expected effect, touches no data, and the baseline and
    holdout follow the same flag.
 3. `--freeze-round1 10`, then `--server-ema 0.7`, then `--fix-bn-from-round` at half the
-   run length. One at a time; each is inside the noise floor until proven otherwise.
+   run length. One at a time; each has to clear **±0.0077** to count.
 4. `--strategy fedadam` / `fedavgm` with an explicit `optimizer`, at a real budget — the
    existing comparison ran 2 × 1, where a server-side optimiser has had two steps.
 5. **Per-class AP on the four classes `warm_start_head` could not warm** (`rider`,

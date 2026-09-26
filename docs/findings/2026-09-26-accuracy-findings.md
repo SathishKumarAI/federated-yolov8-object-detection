@@ -244,10 +244,60 @@ warm-started model scores **0.2582** on the holdout untrained, and that round 1 
 arms' round 1 of 0.1045 sits ~0.09 *below* the untrained warm model, which is a much worse
 round 1 than the documented damage accounts for.
 
-So the honest reading is that **the noise floor's own arms are now suspect**, and the floor
-is being re-measured on this code before any lever is judged against it. That is the same
-shape as the ±0.016 correction: a number inherited as ground truth and used to accept or
-dismiss differences, without its own provenance ever being checked.
+### Re-measured, and both halves of the suspicion were right
+
+`MEASURED`, three seeds on this code, same conditions, same holdout:
+
+| seed | holdout mAP50 | fleet |
+|---|---|---|
+| 0 | 0.2135 | `05b20cd347dd` |
+| 1 | 0.2207 | `b1dddd7f561c` |
+| 2 | 0.2289 | `73602fcd54b1` |
+
+**mean 0.2210, max − min 0.0154, half-range ±0.0077, stdev 0.0077.**
+
+Two conclusions, and they are independent:
+
+1. **The floor is ±0.0077, not ±0.0018** — 4.3× looser, and still a lower bound at n=3.
+   Everything this session added has to clear that. It also puts FedBN's +0.0040 back
+   inside the band, retiring the "a real difference was dismissed" reading of it.
+2. **The old trio is irreproducible.** 0.1193 / 0.1157 / 0.1186 then; 0.2135 / 0.2207 /
+   0.2289 now. No overlap, a systematic ≈ +0.10, and the transport fix accounts for
+   +0.0042 of it. It stays unattributed rather than credited to this session's work.
+   Aug-16 runs at the same budget scored 0.2073 and 0.2097, which is where today's arms
+   sit — so the five Sept-2 `random` runs are the outliers, not today's.
+
+That is the same shape as the ±0.016 correction: a number inherited as ground truth and
+used to accept or dismiss differences, without its own provenance ever being checked.
+
+### And the reason nobody could have noticed: the B4 guard was reading September
+
+`MEASURED`. `paths.log_dirs()` searched `my-project/logs` and `REPO/logs`. A federation's
+server log is in neither — `subprocess_env` points `FL_AV_DATA_ROOT` at the fleet so
+my-project reads the simulated vehicles, and `logging_setup.project_root` resolves a
+relative log path against that env var first, so the log follows the **data root**:
+`pipeline/vehicles/logs/server.<pid>.log`.
+
+```
+latest_run_log()     -> my-project/logs/server.33044.log          (Sep 2 13:43)
+federation_learned() -> (True, 'weights moved every round:
+                                [-600.7723073065281, -1021.0093142390251]')
+```
+
+Those two values exist in exactly one file on this machine and it is three weeks old.
+Today's runs wrote their own: `-519.67 / -1059.68`, `-431.99 / -882.84`,
+`-524.84 / -866.97`. So **the one signal this project says to trust above the metrics was
+inert, in the direction that passes** — a federation that learned nothing would have been
+waved through by September's numbers.
+
+Found because the merged dashboard prints the checksum ledger and two reports from
+different days, different fleets and different code quoted bit-identical values. Sixteen
+significant digits do not repeat.
+
+Fixed by adding the fleet's log directory, first in the list. Two tests, both proven
+against the reverted code: the directory is searched, and — the general form — no
+`server*.log` anywhere in the checkout that recorded an aggregation may sit outside the
+searched directories.
 
 ### A stale-data bug found on the way, not fixed here
 
