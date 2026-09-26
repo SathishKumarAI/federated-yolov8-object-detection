@@ -375,6 +375,14 @@ def test_fedbn_reaches_the_client_as_a_toml_boolean(_flwr_launcher):
     assert "local_bn=false" in " ".join(stages._cmd_federate(Config()))
 
 
+def test_the_round_one_freeze_reaches_the_federation(_flwr_launcher):
+    """The lever is worthless if it stops at the pipeline. Off by default, because a
+    freeze that arrives unasked changes every number this repo has already measured."""
+    on = " ".join(stages._cmd_federate(Config(freeze_round1=10)))
+    assert "freeze_round1=10" in on
+    assert "freeze_round1=0" in " ".join(stages._cmd_federate(Config()))
+
+
 def test_a_gpu_fraction_ray_cannot_schedule_is_refused_rather_than_hung(capsys):
     """Ray accepts num_gpus > 1 per client and then places no client at all: the
     federation waits for workers that can never be scheduled, with nothing in any log

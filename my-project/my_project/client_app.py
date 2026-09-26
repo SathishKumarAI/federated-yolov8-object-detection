@@ -226,6 +226,10 @@ class FlowerClient(Client):
         optimizer = str(ins.config.get("optimizer", "auto"))
         lr0 = float(ins.config.get("lr0", 0.0))
         mosaic = float(ins.config.get("mosaic", -1.0))   # negative = leave the default
+        # How many leading layers to freeze THIS round. The server sends a non-zero
+        # value on round 1 only, so the head can settle against features the backbone
+        # already had rather than pulling them apart. 0 = train everything.
+        freeze = int(ins.config.get("freeze", 0))
 
         # `optimizer="auto"` REPLACES lr0 with 0.002*5/(4+nc) and logs that it did, in
         # a line nobody read. Passing lr0 while leaving the optimizer on auto is a
@@ -297,6 +301,19 @@ class FlowerClient(Client):
                 tuning["lr0"] = lr0
             if mosaic >= 0:
                 tuning["mosaic"] = mosaic
+            if freeze > 0:
+                # Ultralytics freezes `model.0.`..`model.{freeze-1}.` plus `.dfl`
+                # (engine/trainer.py:330-352) and raises if nothing is left trainable,
+                # so a too-large value fails loudly rather than training nothing. It
+                # also puts those layers' BatchNorm into eval() (trainer.py:701-707), so
+                # the statistics do not drift either: measured at freeze=10, 0 of 54
+                # backbone weights and 0 of 27 backbone running_var changed, against
+                # 66/67 and 30/30 in the head. Round 1 therefore returns a bit-identical
+                # backbone from every vehicle and federates only the head.
+                tuning["freeze"] = freeze
+                logger.info(
+                    f"[Client] Round {ins.config.get('server_round')}: freezing the "
+                    f"first {freeze} layers so the head settles against fixed features.")
 
             results = self.yolo.train(
                 data=data_yaml_path,

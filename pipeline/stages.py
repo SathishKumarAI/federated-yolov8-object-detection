@@ -58,6 +58,11 @@ class Config:
     gpu_fraction: float = 1.0        # Ray's per-client GPU share; <1 packs clients
     cache: str = ""                  # "" | ram | disk -- ultralytics' dataset cache
     local_bn: bool = False           # FedBN: each vehicle keeps its own BatchNorm
+    # Round 1 only, 0 = off. `.load()` cannot transfer the classification convs, so
+    # the head starts part-random and round 1 backpropagates its error into a backbone
+    # that already knew: the warm-started model scored 0.2582 on the holdout untrained
+    # and 0.2073 after two rounds. 10 is the YOLOv8s backbone.
+    freeze_round1: int = 0           # layers frozen on round 1, so the head settles
     ray_address: str | None = None   # set => attach to an existing head node
 
     @property
@@ -352,7 +357,8 @@ def _cmd_federate(cfg: Config) -> list[str]:
             f'strategy="{cfg.strategy}" proximal_mu={cfg.proximal_mu} '
             # TOML booleans are lowercase; Python's True is a bare word flwr cannot
             # parse, and the run would die before the first round.
-            f'cache="{cfg.cache}" local_bn={str(cfg.local_bn).lower()}']
+            f'cache="{cfg.cache}" local_bn={str(cfg.local_bn).lower()} '
+            f'freeze_round1={cfg.freeze_round1}']
 
 
 def _cmd_verify(_: Config) -> list[str]:

@@ -58,3 +58,19 @@ def test_the_round_config_carries_nothing_per_vehicle():
 def test_exactly_one_round_draws_pictures(rounds):
     drew = [round_config(r, rounds, 1)["plots"] for r in range(1, rounds + 1)]
     assert sum(drew) == 1, f"{sum(drew)} of {rounds} rounds draw plots, expected 1"
+
+
+def test_the_backbone_freeze_is_round_one_only():
+    """A freeze that stayed on would federate a frozen backbone for the whole run --
+    a different experiment wearing this one's name. Round 1 is the round where the
+    part-random head is pulling good features apart; after it, there is nothing to
+    protect them from."""
+    sent = [round_config(r, 6, 4, freeze_round1=10)["freeze"] for r in range(1, 7)]
+    assert sent == [10, 0, 0, 0, 0, 0]
+
+
+def test_freeze_is_off_unless_asked_for():
+    """Default 0 so adding the lever changes no existing number. The client only passes
+    `freeze` to Ultralytics when it is > 0, because freeze=0 is a value, not a silence."""
+    assert round_config(1, 6, 4)["freeze"] == 0
+    assert all(round_config(r, 3, 1)["freeze"] == 0 for r in range(1, 4))

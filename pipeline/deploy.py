@@ -115,7 +115,8 @@ def run_cmd(federation: str, cfg: Config) -> list[str]:
             f'num_server_rounds={cfg.rounds} local_epochs={cfg.local_epochs} '
             f'min_clients={cfg.n_vehicles} fraction_fit=1.0 '
             f'strategy="{cfg.strategy}" proximal_mu={cfg.proximal_mu} '
-            f'cache="{cfg.cache}" local_bn={str(cfg.local_bn).lower()}']
+            f'cache="{cfg.cache}" local_bn={str(cfg.local_bn).lower()} '
+            f'freeze_round1={cfg.freeze_round1}']
 
 
 def federation_entry(name: str, host: str) -> str:
@@ -152,6 +153,7 @@ def main(argv=None) -> int:
     ap.add_argument("--epochs", type=int, default=1)
     ap.add_argument("--strategy", default="fedavg")
     ap.add_argument("--local-bn", action="store_true")
+    ap.add_argument("--freeze-round1", type=int, default=0)
     ap.add_argument("--federation", default="local-deployment")
     ap.add_argument("--superlink-host", default="127.0.0.1",
                     help="0.0.0.0 to accept SuperNodes from other machines. No TLS and "
@@ -164,7 +166,8 @@ def main(argv=None) -> int:
     args = ap.parse_args(argv)
 
     cfg = Config(rounds=args.rounds, local_epochs=args.epochs, n_vehicles=args.nodes,
-                 strategy=args.strategy, local_bn=args.local_bn)
+                 strategy=args.strategy, local_bn=args.local_bn,
+                 freeze_round1=args.freeze_round1)
     superlink = f"{'127.0.0.1' if args.superlink_host == '0.0.0.0' else args.superlink_host}:{FLEET_PORT}"
 
     cmds = [("superlink", superlink_cmd(args.superlink_host))]

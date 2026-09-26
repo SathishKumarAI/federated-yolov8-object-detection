@@ -37,7 +37,8 @@ DEFAULT_NUM_ROUNDS = 3
 
 def round_config(server_round: int, num_rounds: int, local_epochs: int, *,
                  plots_every_round: bool = False, optimizer: str = "auto",
-                 lr0: float = 0.0, mosaic: float = -1.0) -> Dict[str, Scalar]:
+                 lr0: float = 0.0, mosaic: float = -1.0,
+                 freeze_round1: int = 0) -> Dict[str, Scalar]:
     """What every client is told about THIS round.
 
     Shared across clients on purpose, and safe to share -- unlike ``batch_id``, which
@@ -55,6 +56,40 @@ def round_config(server_round: int, num_rounds: int, local_epochs: int, *,
 
     ``lr0`` is inert unless ``optimizer`` is set: ``optimizer="auto"`` replaces lr0
     with ``0.002*5/(4+nc)``. The client warns when it is handed that combination.
+
+    ``freeze``: how many leading layers each client freezes, and it is sent as a
+    per-round value because it is only wanted on round 1. ``.load()`` transfers 349 of
+    355 tensors and cannot transfer the three classification convolutions, so the head
+    starts part-warmed at best -- 9 of 13 classes from COCO, the other four random. Round
+    1 therefore backpropagates that head's error into a backbone that already knew what a
+    car looks like, and this project has measured the damage: the warm-started model
+    scored 0.2582 on the holdout untrained and 0.2073 after two rounds. Freezing
+    ``model.0.``..``model.9.`` for round 1 only lets the head settle against fixed
+    features, which is what three independent papers arrive at -- linear-probe-then-
+    fine-tune (arXiv:2306.03937), FedBABU (arXiv:2106.06042), and FedSTO's first stage on
+    this very dataset (arXiv:2310.17097).
+
+    What ``freeze=10`` actually does, MEASURED on one epoch of batch_1 rather than
+    assumed -- and it is stronger than "no gradient":
+
+    ```
+    backbone model.0-9   weight   changed  0/54     head model.10-22  weight   changed 66/67
+    backbone model.0-9   bias     changed  0/27     head model.10-22  bias     changed 36/36
+    backbone model.0-9  running_var changed 0/27    head model.10-22 running_var changed 30/30
+    requires_grad=False on 82/184 parameter tensors
+    ```
+
+    The statistics do not drift either, because ``_model_train``
+    (``engine/trainer.py:701-707``) puts every frozen layer's ``BatchNorm2d`` into
+    ``eval()`` -- "Freeze BN stat", in their words. So round 1 sends back a backbone that
+    is *bit-identical* on every vehicle, which makes its aggregation an average of
+    identical tensors and turns round 1 into a purely head-fitting round, federated only
+    where the disagreement is. That is precisely the arrangement FedBABU and LP-FT
+    describe, arrived at by the library's own implementation detail.
+
+    ``freeze=N`` means ``model.0.``..``model.{N-1}.`` plus ``.dfl``
+    (``engine/trainer.py:330-352``), so 10 is the backbone of YOLOv8s, and a value large
+    enough to leave nothing trainable raises instead of training nothing.
     """
     return {
         "local_epochs": local_epochs,
@@ -64,6 +99,9 @@ def round_config(server_round: int, num_rounds: int, local_epochs: int, *,
         "optimizer": optimizer,
         "lr0": lr0,
         "mosaic": mosaic,
+        # Round 1 only. A freeze that stayed on would federate a frozen backbone for
+        # the whole run, which is a different experiment wearing this one's name.
+        "freeze": int(freeze_round1) if server_round == 1 else 0,
     }
 
 
@@ -551,6 +589,9 @@ def server_fn(context: Context):
     # "mosaic off" rather than "not specified" -- a default silently changed to its
     # opposite is exactly the failure this project keeps shipping.
     mosaic = float(run_config.get("mosaic", -1.0))
+    # Round 1 only, and 0 = off, so this commit changes no numbers until it is set. 10 is
+    # the YOLOv8s backbone; see round_config for why round 1 is the round that wants it.
+    freeze_round1 = int(run_config.get("freeze_round1", 0))
     # FedBN is a client-side filter -- the server still receives and averages every
     # tensor, clients simply decline the BatchNorm ones. Recorded here so the run log
     # says which federation this was, and so the caveat below is on the record.
@@ -559,7 +600,8 @@ def server_fn(context: Context):
         f"[Server] run_config -> num_rounds={num_rounds}, fraction_fit={fraction_fit}, "
         f"fraction_evaluate={fraction_evaluate}, local_epochs={local_epochs}, "
         f"min_clients={min_clients}, strategy={strategy_name}, "
-        f"proximal_mu={proximal_mu}, local_bn={local_bn}"
+        f"proximal_mu={proximal_mu}, local_bn={local_bn}, "
+        f"freeze_round1={freeze_round1}"
     )
     if local_bn:
         logger.warning(
@@ -609,7 +651,8 @@ def server_fn(context: Context):
     def fit_config_fn(server_round: int) -> Dict[str, Scalar]:
         return round_config(server_round, num_rounds, local_epochs,
                             plots_every_round=plots_every_round,
-                            optimizer=optimizer_name, lr0=lr0, mosaic=mosaic)
+                            optimizer=optimizer_name, lr0=lr0, mosaic=mosaic,
+                            freeze_round1=freeze_round1)
 
     # Build the strategy through the registry: the mixin carries this project's
     # behaviour, the named Flower strategy carries the aggregation.

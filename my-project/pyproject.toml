@@ -79,6 +79,12 @@ plots_every_round = false # true restores drawing ultralytics' pictures every ro
 optimizer = "auto"
 lr0 = 0.0                 # 0.0 = leave ultralytics alone
 mosaic = -1.0             # negative = leave the default; 0.0 legitimately means "mosaic off"
+# Freeze the first N layers on ROUND 1 ONLY, so the part-random head settles against
+# features the backbone already had instead of pulling them apart. 10 is the YOLOv8s
+# backbone; 0 = off. Measured motivation: the warm-started model scored 0.2582 on the
+# holdout untrained and 0.2073 after two rounds. Prior art: arXiv:2306.03937 (probe then
+# fine-tune), arXiv:2106.06042 (FedBABU), arXiv:2310.17097 (FedSTO, on BDD100K).
+freeze_round1 = 0
 
 # NOTE: `flwr run` rewrites this section in place on first use — it migrates the
 # federations to ~/.flwr/config.toml and comments out everything below, leaving a
