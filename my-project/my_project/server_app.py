@@ -115,6 +115,29 @@ def round_config(server_round: int, num_rounds: int, local_epochs: int, *,
     }
 
 
+def learning_checksum(weights) -> float:
+    """Sum of the LEARNED tensors only -- the B4 guard's arithmetic.
+
+    Integer buffers are excluded, and that exclusion is the whole point.
+    `num_batches_tracked` is int64 and climbs by one per optimizer step in every BatchNorm
+    layer, so with 57 of them and 88 steps a round it adds roughly +5 000 to a naive sum
+    every round, monotonically, whatever the weights do. A frozen model would still show a
+    moving checksum.
+
+    It did not use to matter: until 2026-09-26 the clients sent `best.pt`'s EMA, and
+    `ModelEMA.update` lerps only floating-point tensors, so every counter arrived as 0 and
+    the sum was float-only by accident. Sending the trained module -- the fix for that bug
+    -- brought the real counters with it, and would have quietly blunted the single signal
+    this project trusts most: "equal consecutive checksums mean nothing is being learned".
+
+    Consequence to state rather than hide: checksums logged before and after this change are
+    not comparable with each other. The comparison that matters is round-to-round inside one
+    run, which is what `pipeline/logparse.py` reads.
+    """
+    return float(sum(w.sum() for w in weights
+                     if w.size > 0 and w.dtype.kind == "f"))
+
+
 class BatchAssignmentMixin:
     """Everything this project needs from a strategy, independent of how it aggregates.
 
@@ -260,7 +283,7 @@ class BatchAssignmentMixin:
 
         # Log parameter information for debugging
         weights = parameters_to_ndarrays(parameters)
-        weights_checksum = sum(w.sum() for w in weights if w.size > 0)
+        weights_checksum = learning_checksum(weights)
         logger.info(f"[Server] Sending parameters with checksum: {weights_checksum}")
 
         # Delegate to FedAvg for the initial instructions
@@ -324,7 +347,7 @@ class BatchAssignmentMixin:
 
         # Log parameter information for debugging
         weights = parameters_to_ndarrays(parameters)
-        weights_checksum = sum(w.sum() for w in weights if w.size > 0)
+        weights_checksum = learning_checksum(weights)
         logger.info(f"[Server] Sending evaluation parameters with checksum: {weights_checksum}")
 
         # Use default Flower behavior
@@ -454,7 +477,7 @@ class BatchAssignmentMixin:
             if self.server_ema > 0:
                 weights = self._apply_server_ema(weights, server_round)
                 parameters = fl.common.ndarrays_to_parameters(weights)
-            weights_checksum = sum(w.sum() for w in weights if w.size > 0)
+            weights_checksum = learning_checksum(weights)
             logger.info(f"[Server] Aggregated parameters with checksum: {weights_checksum}")
 
             # Persist the aggregated global model on the configured cadence and on

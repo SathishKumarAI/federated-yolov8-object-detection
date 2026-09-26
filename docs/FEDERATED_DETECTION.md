@@ -348,6 +348,12 @@ matching epoch count or state the ratio, exactly as `baseline.parity` already do
 
 ## What to actually run
 
+> **Updated 2026-09-26.** Items 5b and 6b-6e below were added that day, and the reading
+> that produced them — including the FedAvg-matches-centralised result on this dataset from
+> arXiv:2509.01868 — is in
+> [`docs/findings/2026-09-26-accuracy-findings.md`](findings/2026-09-26-accuracy-findings.md).
+> Every one of them defaults to off.
+
 Ordered by expected value per GPU-hour on this machine, all of it gated behind the
 phase-3 seed spread — nothing below is claimable until a difference bigger than
 ±0.016 mAP50 is what "better" means.
@@ -360,6 +366,11 @@ phase-3 seed spread — nothing below is claimable until a difference bigger tha
 | 3 | Server-driven `lr0` + `warmup_epochs`, broadcast per round | `server_app.py` + `client_app.py` ⚠ | small | safe to share one `FitIns`: the schedule is global, unlike the B9 `batch_id`. Attacks the 0.066 mAP50 round-1 loss |
 | 4 | `mosaic` and `erasing` as run-config keys | `client_app.py` ⚠ | small | 30 % of the dataloader, and the dataloader is the bottleneck. Changes the data path, so holdout-gated |
 | 5 | **FedBN** — BN tensors stay local | `get_set_model.py` + strategy ⚠ | medium | the only technique here aimed at *feature-shift* non-IID, which is the axis this fleet is partitioned on |
+| 5b ✅ | **FixBN** — pin the *shared* statistics after a warm-up | `trainers.py` ⚠ | done | added 2026-09-26. Same problem as FedBN, opposite answer, and it leaves ONE global model, so the holdout still measures the model that was trained. arXiv:2303.06530 |
+| 6b ✅ | **The trained weights, not `best.pt`'s fp16 EMA** | `client_app.py` ⚠ | done | not a lever: a bug. `YOLO.train()` rebinds `yolo.model` to a reloaded checkpoint holding `deepcopy(ema).half()`. Measured 355/355 tensors exactly fp16-representable leaving the client against 58/355 live |
+| 6c ✅ | **Server-side EMA across rounds** | `server_app.py` ⚠ | done | the client's EMA restarts at `updates = 0` every round, so 88 steps reach decay 0.043 while the ceiling's 3 168 reach 0.795. Bias-corrected. arXiv:2507.20016 |
+| 6d ✅ | **`freeze` on round 1** | both ⚠ | done | measured: it pins the backbone's BN statistics too, so round 1 federates only the head. arXiv:2306.03937, arXiv:2106.06042, arXiv:2310.17097 |
+| 6e ✅ | **`imgsz` as one number for all four stages** | both + pipeline | done | BDD frames are 1280x720; published numbers on this dataset are 0.470 mAP50 at 640 against 0.625 at 1024. The baseline and holdout already took the flag |
 | 6 | True per-step FedProx | `DetectionTrainer` subclass ⚠ | ~15 lines | today's is a post-hoc weight-space pull, which is honest but is not FedProx |
 | 7 | Personalised heads | strategy ⚠ | medium | stacks with 5; both are "share the backbone" |
 

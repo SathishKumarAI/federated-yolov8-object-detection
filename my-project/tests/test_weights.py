@@ -97,3 +97,40 @@ def test_roundtrip_through_numpy_list():
     dst = TinyBNNet()
     assert set_weights(dst, [w.copy() for w in weights]) is True
     assert torch.allclose(dst.bn.running_var, src.bn.running_var)
+
+
+def test_the_checksum_ignores_the_batchnorm_counters():
+    """The B4 guard is "equal consecutive checksums mean nothing is being learned". That
+    only works if the number cannot move on its own.
+
+    `num_batches_tracked` is int64 and climbs by one per optimizer step in every BatchNorm
+    layer -- 57 of them, 88 steps a round. A naive sum therefore rises about +5 000 every
+    round whatever the weights do, and a frozen federation would look like a learning one.
+
+    It was float-only by accident until 2026-09-26: the clients sent `best.pt`'s EMA and
+    `ModelEMA.update` lerps only floating-point tensors, so every counter arrived as 0.
+    Sending the trained module brought the real counters with it.
+    """
+    import numpy as np
+
+    from my_project.server_app import learning_checksum
+
+    floats = [np.array([1.5, -0.5], dtype=np.float32)]
+    counters = [np.array([88], dtype=np.int64)]
+
+    assert learning_checksum(floats) == 1.0
+    assert learning_checksum(floats + counters) == 1.0,         "an integer buffer must not be able to move the checksum"
+    # And a round later, with the counters bumped and nothing learned:
+    assert learning_checksum(floats + [np.array([176], dtype=np.int64)]) == 1.0
+
+
+def test_the_checksum_still_moves_when_a_weight_does():
+    """The guard on the guard: a filter that excluded everything would also be stable."""
+    import numpy as np
+
+    from my_project.server_app import learning_checksum
+
+    before = [np.array([1.0], dtype=np.float32), np.array([1], dtype=np.int64)]
+    after = [np.array([1.0001], dtype=np.float32), np.array([1], dtype=np.int64)]
+
+    assert learning_checksum(before) != learning_checksum(after)

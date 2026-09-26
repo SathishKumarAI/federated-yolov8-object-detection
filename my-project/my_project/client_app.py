@@ -394,8 +394,12 @@ class FlowerClient(Client):
             # Log both, every round. The two numbers differing is the fix working; them
             # being equal means the trainer was not reachable and the fp16 EMA went out
             # instead, which is the bug this replaced and must never be silent again.
+            #
+            # Summed straight off the tensors rather than through get_weights: that would
+            # copy all 355 of them to host memory as numpy, ~44 MB per client per round,
+            # to produce one float. A log line is not worth a second serialisation.
             reloaded_checksum = sum(
-                w.sum() for w in get_weights(self.model) if w.size > 0)
+                float(t.sum()) for t in self.model.state_dict().values() if t.numel())
             trained_checksum = sum(w.sum() for w in updated_weights if w.size > 0)
             logger.info(
                 f"[Client] trained weights checksum {trained_checksum}; the reloaded "
