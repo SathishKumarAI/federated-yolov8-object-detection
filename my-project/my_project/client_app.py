@@ -21,6 +21,7 @@ from my_project.task import (
 import urllib
 from my_project.get_set_model import (NUM_CLASSES_MODEL_YAML, batchnorm_keys, get_weights,
                                       set_weights, warm_start_head)
+from my_project.trainers import fixbn_trainer
 from utils.logging_setup import configure_logging
 
 warnings.filterwarnings("ignore", category=DeprecationWarning)
@@ -230,6 +231,9 @@ class FlowerClient(Client):
         # value on round 1 only, so the head can settle against features the backbone
         # already had rather than pulling them apart. 0 = train everything.
         freeze = int(ins.config.get("freeze", 0))
+        # FixBN: normalise with the aggregate's statistics and stop them moving.
+        # The server decides which rounds, because the warm-up phase is the method.
+        fix_bn = bool(ins.config.get("fix_bn", False))
 
         # `optimizer="auto"` REPLACES lr0 with 0.002*5/(4+nc) and logs that it did, in
         # a line nobody read. Passing lr0 while leaving the optimizer on auto is a
@@ -314,6 +318,15 @@ class FlowerClient(Client):
                 logger.info(
                     f"[Client] Round {ins.config.get('server_round')}: freezing the "
                     f"first {freeze} layers so the head settles against fixed features.")
+            if fix_bn:
+                # A trainer subclass, not a call before train(): `_model_train` runs
+                # `model.train()` at the start of every epoch, which would undo an
+                # eval() set from out here on the second epoch and leave a warm-up
+                # phase nobody chose inside the round. See my_project/trainers.py.
+                tuning["trainer"] = fixbn_trainer()
+                logger.info(
+                    f"[Client] Round {ins.config.get('server_round')}: FixBN on -- "
+                    f"normalising with the aggregate's statistics, and not moving them.")
 
             results = self.yolo.train(
                 data=data_yaml_path,

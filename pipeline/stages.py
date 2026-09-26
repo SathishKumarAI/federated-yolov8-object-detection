@@ -64,6 +64,7 @@ class Config:
     # and 0.2073 after two rounds. 10 is the YOLOv8s backbone.
     freeze_round1: int = 0           # layers frozen on round 1, so the head settles
     server_ema: float = 0.0          # >0: EMA the aggregate across rounds (FedSWA-style)
+    fix_bn_from_round: int = 0       # >0: FixBN -- pin BatchNorm statistics from that round
     ray_address: str | None = None   # set => attach to an existing head node
 
     @property
@@ -359,7 +360,8 @@ def _cmd_federate(cfg: Config) -> list[str]:
             # TOML booleans are lowercase; Python's True is a bare word flwr cannot
             # parse, and the run would die before the first round.
             f'cache="{cfg.cache}" local_bn={str(cfg.local_bn).lower()} '
-            f'freeze_round1={cfg.freeze_round1} server_ema={cfg.server_ema}']
+            f'freeze_round1={cfg.freeze_round1} server_ema={cfg.server_ema} '
+            f'fix_bn_from_round={cfg.fix_bn_from_round}']
 
 
 def _cmd_verify(_: Config) -> list[str]:

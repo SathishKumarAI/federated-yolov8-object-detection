@@ -95,6 +95,13 @@ freeze_round1 = 0
 # reporting change. Prior art: arXiv:2507.20016 (FedSWA), arXiv:2505.00318 (FedEMA).
 server_ema = 0.0
 
+# FixBN (arXiv:2303.06530): from this round onward, every client normalises with the
+# aggregate's BatchNorm statistics and stops updating them. 0 = off. The warm-up matters:
+# the statistics have to be worth pinning before they are pinned, so 1 would pin COCO's
+# initial ones. Unlike FedBN this leaves ONE global model, so the holdout keeps measuring
+# the model that was actually trained.
+fix_bn_from_round = 0
+
 # NOTE: `flwr run` rewrites this section in place on first use — it migrates the
 # federations to ~/.flwr/config.toml and comments out everything below, leaving a
 # "CONFIGURATION MIGRATION NOTICE" banner. That is a local artifact: do NOT commit

@@ -315,6 +315,13 @@ def build_parser() -> argparse.ArgumentParser:
                          "rebuilds its own EMA per round with updates=0. The clients "
                          "continue from the smoothed model, so this is a different "
                          "federation, not a reporting change")
+    ap.add_argument("--fix-bn-from-round", type=int, default=0, metavar="R",
+                    help="FixBN (arXiv:2303.06530): from round R onward every client "
+                         "normalises with the aggregate's BatchNorm statistics and stops "
+                         "updating them. 0 = off. The warm-up is the method -- R=1 pins "
+                         "COCO's initial statistics, which is not it. Unlike --local-bn "
+                         "this leaves ONE global model, so the holdout keeps measuring "
+                         "the model that was trained")
     ap.add_argument("--local-bn", action="store_true",
                     help="FedBN: every vehicle keeps its own BatchNorm and takes the "
                          "rest from the aggregate. Aimed at CONDITION partitioning, "
@@ -339,6 +346,7 @@ def main(argv=None) -> int:
                  gpu_fraction=args.gpu_fraction, cache=args.cache,
                  local_bn=args.local_bn, freeze_round1=args.freeze_round1,
                  server_ema=args.server_ema,
+                 fix_bn_from_round=args.fix_bn_from_round,
                  ray_address=args.ray_address)
     if not 0 < cfg.gpu_fraction <= 1:
         # Ray accepts a fraction above 1 and then schedules nothing, so the run hangs

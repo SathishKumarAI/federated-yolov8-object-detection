@@ -116,7 +116,8 @@ def run_cmd(federation: str, cfg: Config) -> list[str]:
             f'min_clients={cfg.n_vehicles} fraction_fit=1.0 '
             f'strategy="{cfg.strategy}" proximal_mu={cfg.proximal_mu} '
             f'cache="{cfg.cache}" local_bn={str(cfg.local_bn).lower()} '
-            f'freeze_round1={cfg.freeze_round1} server_ema={cfg.server_ema}']
+            f'freeze_round1={cfg.freeze_round1} server_ema={cfg.server_ema} '
+            f'fix_bn_from_round={cfg.fix_bn_from_round}']
 
 
 def federation_entry(name: str, host: str) -> str:
@@ -155,6 +156,7 @@ def main(argv=None) -> int:
     ap.add_argument("--local-bn", action="store_true")
     ap.add_argument("--freeze-round1", type=int, default=0)
     ap.add_argument("--server-ema", type=float, default=0.0)
+    ap.add_argument("--fix-bn-from-round", type=int, default=0)
     ap.add_argument("--federation", default="local-deployment")
     ap.add_argument("--superlink-host", default="127.0.0.1",
                     help="0.0.0.0 to accept SuperNodes from other machines. No TLS and "
@@ -168,7 +170,8 @@ def main(argv=None) -> int:
 
     cfg = Config(rounds=args.rounds, local_epochs=args.epochs, n_vehicles=args.nodes,
                  strategy=args.strategy, local_bn=args.local_bn,
-                 freeze_round1=args.freeze_round1, server_ema=args.server_ema)
+                 freeze_round1=args.freeze_round1, server_ema=args.server_ema,
+                 fix_bn_from_round=args.fix_bn_from_round)
     superlink = f"{'127.0.0.1' if args.superlink_host == '0.0.0.0' else args.superlink_host}:{FLEET_PORT}"
 
     cmds = [("superlink", superlink_cmd(args.superlink_host))]

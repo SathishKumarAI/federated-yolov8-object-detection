@@ -38,7 +38,7 @@ DEFAULT_NUM_ROUNDS = 3
 def round_config(server_round: int, num_rounds: int, local_epochs: int, *,
                  plots_every_round: bool = False, optimizer: str = "auto",
                  lr0: float = 0.0, mosaic: float = -1.0,
-                 freeze_round1: int = 0) -> Dict[str, Scalar]:
+                 freeze_round1: int = 0, fix_bn_from_round: int = 0) -> Dict[str, Scalar]:
     """What every client is told about THIS round.
 
     Shared across clients on purpose, and safe to share -- unlike ``batch_id``, which
@@ -102,6 +102,10 @@ def round_config(server_round: int, num_rounds: int, local_epochs: int, *,
         # Round 1 only. A freeze that stayed on would federate a frozen backbone for
         # the whole run, which is a different experiment wearing this one's name.
         "freeze": int(freeze_round1) if server_round == 1 else 0,
+        # FixBN: on from the named round to the end of the run, never for one round.
+        # A warm-up is the method, not an implementation detail -- the statistics have
+        # to be worth pinning before they are pinned, and 1 pins the COCO initial ones.
+        "fix_bn": bool(fix_bn_from_round) and server_round >= int(fix_bn_from_round),
     }
 
 
@@ -665,6 +669,10 @@ def server_fn(context: Context):
     # reporting one: the clients continue from the smoothed model. See
     # BatchAssignmentMixin._apply_server_ema.
     server_ema = float(run_config.get("server_ema", 0.0))
+    # FixBN (arXiv:2303.06530): freeze the normalisation statistics from this round
+    # on. 0 = off. Unlike FedBN it leaves ONE global model, so the holdout still
+    # measures the model that was trained.
+    fix_bn_from_round = int(run_config.get("fix_bn_from_round", 0))
     # FedBN is a client-side filter -- the server still receives and averages every
     # tensor, clients simply decline the BatchNorm ones. Recorded here so the run log
     # says which federation this was, and so the caveat below is on the record.
@@ -674,7 +682,8 @@ def server_fn(context: Context):
         f"fraction_evaluate={fraction_evaluate}, local_epochs={local_epochs}, "
         f"min_clients={min_clients}, strategy={strategy_name}, "
         f"proximal_mu={proximal_mu}, local_bn={local_bn}, "
-        f"freeze_round1={freeze_round1}, server_ema={server_ema}"
+        f"freeze_round1={freeze_round1}, server_ema={server_ema}, "
+        f"fix_bn_from_round={fix_bn_from_round}"
     )
     if local_bn:
         logger.warning(
@@ -725,7 +734,8 @@ def server_fn(context: Context):
         return round_config(server_round, num_rounds, local_epochs,
                             plots_every_round=plots_every_round,
                             optimizer=optimizer_name, lr0=lr0, mosaic=mosaic,
-                            freeze_round1=freeze_round1)
+                            freeze_round1=freeze_round1,
+                            fix_bn_from_round=fix_bn_from_round)
 
     # Build the strategy through the registry: the mixin carries this project's
     # behaviour, the named Flower strategy carries the aggregation.
