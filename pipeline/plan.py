@@ -287,11 +287,16 @@ def project(cfg: Config, imgsz: int | None = None) -> dict:
             "integrated from nvidia-smi power on the reference run, scaled the same way",
             ["wh_per_kvisit"])
 
+    # imgsz belongs in this list, and its absence was a projection that would have
+    # misled: both VRAM records were taken at 640, and activation memory scales with the
+    # pixel count, so 5 087 MiB at imgsz=1024 is 2.56x understated. The wall clock was
+    # already refused for the same reason; the number beside it was not.
     vram = _vram(cfg.per_vehicle, cfg.gpu_fraction) if not any(
-        r["lever"] in ("per_vehicle", "gpu_fraction") for r in refusals) else None
+        r["lever"] in ("per_vehicle", "gpu_fraction", "imgsz") for r in refusals) else None
     if vram is None:
         add("peak VRAM", None, "MiB",
-            "refused: outside the shard sizes or packings VRAM was measured at",
+            "refused: outside the shard sizes, packings or image sizes VRAM was "
+            "measured at",
             ["vram_peak_1400", "vram_peak_full"], status="refused")
     else:
         add("peak VRAM", [vram["total_lo_mib"], vram["total_hi_mib"]], "MiB",

@@ -33,7 +33,13 @@ from .stages import Config
 #: running server actually has is answered by `Config.__dataclass_fields__`, not by this
 #: list: the plumbing for these lives on the ML side, and a dashboard that offered one
 #: the server could not apply would be posting a field into a void.
-LEVERS = ("freeze_round1", "server_ema", "fix_bn_from_round", "imgsz", "local_bn")
+#: UI lever name -> the `Config` field that implements it. They are not always the
+#: same word: the image size is `imgsz_override` because `Config.imgsz` is a property
+#: that falls back to the profile default, and advertising by the UI name alone made
+#: the form disable a lever the server does in fact accept.
+LEVERS = {"freeze_round1": "freeze_round1", "server_ema": "server_ema",
+          "fix_bn_from_round": "fix_bn_from_round", "imgsz": "imgsz_override",
+          "local_bn": "local_bn"}
 
 STATIC = Path(__file__).resolve().parent / "static"
 HISTORY_LIMIT = 500
@@ -229,8 +235,8 @@ class State:
                         # though it worked. A body field this server has never heard of
                         # is silently dropped -- exactly the shape of no-op this project
                         # keeps shipping -- so the UI disables the control and says so.
-                        "levers": {name: name in Config.__dataclass_fields__
-                                   for name in LEVERS}},
+                        "levers": {name: field in Config.__dataclass_fields__
+                                   for name, field in LEVERS.items()}},
             "results": [r.__dict__ for r in (self.run.results if self.run else [])],
             "live": self.live(),
             "reports": self.reports(),
@@ -418,6 +424,12 @@ class Handler(BaseHTTPRequestHandler):
         "strategy": ("strategy", str), "alpha": ("alpha", float),
         "size_skew": ("size_skew", float), "gpu_fraction": ("gpu_fraction", float),
         "profile": ("profile", str),
+        # Routed to the field, not handled separately: `plan.project` still takes an
+        # explicit imgsz for callers that have no Config, but the server now builds a
+        # Config that already carries it, so `budget()` and the projections cannot
+        # disagree about the resolution. They did: the budget block reported the demo
+        # profile's 320 while the projections scaled by the requested 640.
+        "imgsz": ("imgsz_override", int),
     }
 
     def _simulate(self) -> None:
@@ -445,12 +457,7 @@ class Handler(BaseHTTPRequestHandler):
             cfg = Config(**fields)
         except TypeError as e:
             return self._json({"error": str(e)}, 400)
-        raw_imgsz = (query.get("imgsz") or [None])[0]
-        try:
-            imgsz = int(raw_imgsz) if raw_imgsz else None
-        except ValueError:
-            return self._json({"error": f"imgsz={raw_imgsz!r} is not an integer"}, 400)
-        self._json(plan.project(cfg, imgsz))
+        self._json(plan.project(cfg))
 
     def _vehicle(self) -> None:
         """Shard composition for one vehicle, for the detail drawer."""

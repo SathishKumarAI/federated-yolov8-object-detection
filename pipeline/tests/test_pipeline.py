@@ -3142,19 +3142,47 @@ def test_the_demo_route_serves_the_recording(monkeypatch):
 
 
 # ------------------------------------------- run levers, the noise floor, and the era
+def test_an_unmeasured_image_size_refuses_the_vram_number_too():
+    """The wall clock was refused at imgsz=1024 and the VRAM figure beside it was not.
+
+    Both VRAM records were taken at 640, and activation memory scales with the pixel
+    count, so 5 087 MiB at 1024 understates it by 2.56x -- a number a reader would size a
+    run by, printed with a measured one's confidence. Refusing half a projection is worse
+    than refusing all of it, because the half that survives looks checked.
+    """
+    from pipeline import plan as _plan
+
+    at_640 = {p["name"]: p for p in _plan.project(Config(profile="full"))["projections"]}
+    assert at_640["peak VRAM"]["status"] == "projected"
+    assert at_640["wall clock"]["status"] == "projected"
+
+    at_1024 = {p["name"]: p
+               for p in _plan.project(Config(profile="full", imgsz_override=1024))["projections"]}
+    assert at_1024["wall clock"]["status"] == "refused"
+    assert at_1024["peak VRAM"]["status"] == "refused"
+    assert at_1024["peak VRAM"]["value"] is None
+
+
 def test_the_form_only_offers_levers_the_running_server_can_apply(monkeypatch):
     """A body field this server has never heard of is dropped in silence.
 
     So `options.levers` is derived from `Config.__dataclass_fields__` rather than listed:
     a lever whose plumbing has not landed yet is advertised as absent, and the form
     disables it instead of posting into a void and reporting a started run.
+
+    Derived through `LEVERS`, which maps the UI name to the field, because the two are not
+    always the same word. `imgsz` is `imgsz_override` -- `Config.imgsz` is a property that
+    falls back to the profile default -- and deriving by the UI name alone disabled a lever
+    the server does in fact accept. Which is the same failure as advertising one it does
+    not, pointing the other way.
     """
     from pipeline import server as srv
 
     levers = srv.STATE.snapshot(Config())["options"]["levers"]
     assert set(levers) == set(srv.LEVERS)
     for name, ok in levers.items():
-        assert ok == (name in Config.__dataclass_fields__), name
+        assert ok == (srv.LEVERS[name] in Config.__dataclass_fields__), name
+    assert levers["imgsz"] is True, "the field is imgsz_override; the UI name is imgsz"
     # local_bn has existed for a while; this is the guard that the derivation is real
     # rather than a dict of True.
     assert levers["local_bn"] is True
