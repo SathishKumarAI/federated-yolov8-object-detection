@@ -152,3 +152,40 @@ def test_six_clients_sharing_one_ray_actor_are_still_six_clients(tmp_path, monke
     assert [len(r.sent) for r in rounds] == [2, 2], "both clients seen in both rounds"
     ok, lines = roundtrip.check(rounds)
     assert ok, lines
+
+
+def test_a_dropped_client_is_caught_at_realistic_magnitudes():
+    """The sensitivity test, and the one that decides the tolerance.
+
+    `test_a_dropped_client_is_caught` uses checksums of 10, 20, 30 -- a spread no real
+    fleet has. Every vehicle starts a round from the SAME global model, so their returned
+    checksums sit within a fraction of a percent of each other, and losing one of six moves
+    the weighted mean by only about 2.3e-04. That is ~200x the worst accumulation error
+    measured on real runs (1.13e-06), not orders of magnitude, so the tolerance has to live
+    inside a narrow window and this test is what holds it there.
+    """
+    sent = [(-531.29, 1400), (-520.0, 1400), (-545.0, 1400),
+            (-538.0, 1400), (-527.0, 1400), (-533.0, 1400)]
+    honest = sum(c for c, _ in sent) / len(sent)
+    dropped = sum(c for c, _ in sent[:-1]) / (len(sent) - 1)
+
+    assert abs(honest - dropped) / abs(honest) < 1e-3, \
+        "the premise: a dropped client is a SMALL signal, not an obvious one"
+
+    r = roundtrip.Round(1, aggregate=dropped, sent=sent, received=[0.0] * len(sent))
+    ok, lines = roundtrip.check([r])
+
+    assert not ok, "a dropped client must still be caught at a realistic spread"
+    assert any("for scale: losing one of 6 clients" in l for l in lines), \
+        "a bare MISMATCH is not actionable; the message must carry the scale"
+
+
+def test_real_accumulation_error_is_not_called_a_mismatch():
+    """The deviations four real rounds actually produced. A tolerance that rejects any of
+    them fails a healthy federation, which is how the first one (1e-6) was caught."""
+    for observed in (0.0, 5.74e-08, 4.70e-07, 1.13e-06):
+        base = -884.114807129
+        r = roundtrip.Round(1, aggregate=base,
+                            sent=[(base * (1 + observed), 1400)], received=[0.0])
+        ok, lines = roundtrip.check([r])
+        assert ok, f"deviation {observed:.2e} came from a real run and must pass: {lines}"

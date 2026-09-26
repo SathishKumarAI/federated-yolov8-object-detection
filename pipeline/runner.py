@@ -331,6 +331,14 @@ def build_parser() -> argparse.ArgumentParser:
                          "this dataset are 0.470 mAP50 at 640 against 0.625 at 1024. "
                          "Costs activation memory as the square: the client scales its "
                          "batch by (640/imgsz)^2")
+    ap.add_argument("--fraction-evaluate", type=float, default=1.0, metavar="F",
+                    help="share of vehicles that re-score themselves each round. FedAvg "
+                         "defaults to 1.0 and the pipeline never sent anything else, so "
+                         "every vehicle re-evaluated every round -- 13.8 %% of wall clock "
+                         "(phase 0), on the per-client metric that is not the headline. "
+                         "The shared holdout is scored separately and is unaffected. Keep "
+                         "it above 0: verify's third criterion reads metrics.csv, which "
+                         "exists because clients evaluate")
     ap.add_argument("--local-bn", action="store_true",
                     help="FedBN: every vehicle keeps its own BatchNorm and takes the "
                          "rest from the aggregate. Aimed at CONDITION partitioning, "
@@ -357,6 +365,7 @@ def main(argv=None) -> int:
                  server_ema=args.server_ema,
                  fix_bn_from_round=args.fix_bn_from_round,
                  imgsz_override=args.imgsz,
+                 fraction_evaluate=args.fraction_evaluate,
                  ray_address=args.ray_address)
     if not 0 < cfg.gpu_fraction <= 1:
         # Ray accepts a fraction above 1 and then schedules nothing, so the run hangs

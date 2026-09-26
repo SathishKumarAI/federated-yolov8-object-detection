@@ -60,10 +60,23 @@ AGGREGATED = re.compile(STAMP + r".*\[Server\] Aggregated parameters with checks
 def _ts(text: str) -> float:
     return datetime.strptime(text, "%Y-%m-%d %H:%M:%S,%f").timestamp()
 
-#: Floating-point summation over 355 tensors and six clients does not associate, so the
-#: identity holds to a relative tolerance rather than exactly. 1e-6 is far tighter than any
-#: real defect -- a dropped client moves the mean by percent, not by parts per million.
-TOLERANCE = 1e-6
+#: Set from both sides, because the window is narrower than it looks.
+#:
+#: **Below:** floating-point summation over 11.1 M values does not associate, and the
+#: aggregate is a sum with heavy cancellation (magnitude ~500 out of millions of terms).
+#: Measured across four real rounds the identity held to 0.0, 5.74e-08, 4.70e-07 and
+#: **1.13e-06** -- the last of which a 1e-6 tolerance rejected, failing a healthy run. That
+#: false alarm is the exact failure this module's CANNOT_CHECK state exists to avoid, so it
+#: is worth stating that the first tolerance here was wrong and was corrected by a run.
+#:
+#: **Above:** a dropped client is *not* an obvious signal. Every vehicle starts each round
+#: from the same global model, so their checksums are close, and losing one of six moves
+#: the weighted mean by only **2.3e-04** relative at this fleet size. The gap between noise
+#: and the smallest real defect is about 200x, not orders of magnitude.
+#:
+#: 1e-5 sits ~9x above the worst observed accumulation and ~20x below a dropped client. The
+#: deviation is always printed, so a borderline number is judged rather than guessed.
+TOLERANCE = 1e-5
 
 
 @dataclass
@@ -166,6 +179,14 @@ def check(rounds: list[Round]) -> tuple[bool, list[str]]:
             f"  round {r.number}: {len(r.sent)} client(s), "
             f"weighted mean {mean:.9f} vs aggregate {r.aggregate:.9f}, "
             f"relative deviation {dev:.2e} {'OK' if agrees else 'MISMATCH'}")
+        if not agrees:
+            # A bare MISMATCH is not actionable: the reader needs to know what size of
+            # defect this deviation is consistent with. Losing one client of N moves the
+            # mean by roughly the spread between clients divided by N.
+            spread = (max(c for c, _ in r.sent) - min(c for c, _ in r.sent)) or 1.0
+            one_client = abs(spread / max(len(r.sent), 1) / max(abs(mean), 1e-9))
+            out.append(f"    for scale: losing one of {len(r.sent)} clients would move it "
+                       f"by about {one_client:.2e}, and the tolerance is {TOLERANCE:.0e}")
         if len(moved) != len(r.sent):
             out.append(f"    ! {len(r.sent) - len(moved)} client(s) returned exactly what "
                        f"they were sent -- that is the B4 failure")

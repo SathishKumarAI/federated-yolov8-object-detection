@@ -3416,3 +3416,14 @@ def test_a_whole_snapshot_renders_through_the_real_panels(tmp_path):
         "state.json": json.dumps(_demo.state()),
         "facts.json": json.dumps({**_meas.table(), "observed_spread": None}),
     })
+
+
+def test_the_self_evaluation_share_reaches_the_federation(_flwr_launcher):
+    """FedAvg defaults `fraction_evaluate` to 1.0 and the pipeline sent nothing, so every
+    vehicle re-scored itself every round -- 13.8 % of wall clock (phase 0), on the metric
+    this project calls the flattering one. The lever existed in `server_app` and was
+    unreachable from here, which is the same as not existing."""
+    assert "fraction_evaluate=0.34" in " ".join(
+        stages._cmd_federate(Config(fraction_evaluate=0.34)))
+    assert "fraction_evaluate=1.0" in " ".join(stages._cmd_federate(Config())), \
+        "off by default: every number measured so far was taken with every client scoring"

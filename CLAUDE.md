@@ -138,6 +138,8 @@ Read these before assuming a green run means a working one.
 | — | run succeeded, checksums identical | shard too small for the batch size: **no optimizer step happened at all** |
 | — | `metrics.csv` showed 6 308 examples | only 10 images existed; `num_examples` is FedAvg's weight |
 | — | rounds completed, checksums changed every round | clients sent the **fp16-rounded EMA of `best.pt`**, not the weights they trained. `YOLO.train()` rebinds `yolo.model` to a reloaded checkpoint, and the checkpoint holds only `deepcopy(ema).half()`. Measured: 355/355 tensors leaving the client were exactly fp16-representable, against 58/355 in the live model |
+| — | `fraction_evaluate` read, logged and passed to the strategy | **inert.** Flower takes `max(int(n · fraction_evaluate), min_evaluate_clients)` and this project passed `min_evaluate_clients = min_clients`, which the pipeline sets to the vehicle count — so the floor was the whole fleet. Measured: a 2-round run at 0.34 still did 12 self-evaluations, which is six clients twice |
+| — | `verify` PASS on the four criteria | it was reading a **three-week-old** server log: `paths.log_dirs()` did not include `pipeline/vehicles/logs`, where a federation's log actually goes |
 
 **The single most useful signal is the round-over-round aggregate checksum.** Equal
 consecutive values mean nothing is being learned, whatever the metrics say. It has a

@@ -115,6 +115,27 @@ def round_config(server_round: int, num_rounds: int, local_epochs: int, *,
     }
 
 
+def evaluate_floor(fraction_evaluate: float, min_clients: int) -> int:
+    """How few clients may evaluate a round -- NOT the same number as for fit.
+
+    Flower picks `max(int(available * fraction_evaluate), min_evaluate_clients)`. This
+    project passed `min_evaluate_clients = min_clients`, and the pipeline sets
+    `min_clients = n_vehicles`, so the floor was the whole fleet and
+    `max(int(6 * 0.34), 6) = 6`. **`fraction_evaluate` could not reduce anything.** It was
+    read from run_config, logged, passed to the strategy, and inert -- the shape of silent
+    no-op this project's CLAUDE.md keeps a table of.
+
+    Measured 2026-09-26: a 2-round run at `fraction_evaluate=0.34` still performed 12
+    client self-evaluations, which is 6 clients x 2 rounds, full participation.
+
+    The fit minimum answers "how many vehicles must train for a round to be worth
+    aggregating"; the evaluate minimum answers "how many must self-score for the row in
+    metrics.csv to mean anything". Tying the second to the first was the bug. At
+    `fraction_evaluate = 1.0` this returns `min_clients`, so nothing already measured moves.
+    """
+    return max(1, min(int(min_clients), round(float(fraction_evaluate) * int(min_clients))))
+
+
 class BatchAssignmentMixin:
     """Everything this project needs from a strategy, independent of how it aggregates.
 
@@ -764,7 +785,7 @@ def server_fn(context: Context):
             fraction_fit=fraction_fit,            # From run_config
             fraction_evaluate=fraction_evaluate,  # From run_config
             min_fit_clients=min_clients,          # From run_config
-            min_evaluate_clients=min_clients,
+            min_evaluate_clients=evaluate_floor(fraction_evaluate, min_clients),
             min_available_clients=min_clients,    # Minimum clients needed to start FL
             on_fit_config_fn=fit_config_fn,
             on_evaluate_config_fn=fit_config_fn,

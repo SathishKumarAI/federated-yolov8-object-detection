@@ -66,6 +66,12 @@ class Config:
     server_ema: float = 0.0          # >0: EMA the aggregate across rounds (FedSWA-style)
     fix_bn_from_round: int = 0       # >0: FixBN -- pin BatchNorm statistics from that round
     imgsz_override: int = 0          # 0 = the profile default (320 demo / 640 full)
+    # Share of clients that re-score themselves each round. FedAvg's default is 1.0 and
+    # the pipeline never sent anything, so every vehicle re-evaluated every round --
+    # phase 0 measured that at 13.8 % of wall clock, spent on the per-client metric that
+    # is NOT the headline (the shared holdout is). Must stay > 0: `pipeline.verify`'s
+    # third criterion reads metrics.csv, which only has rows because clients evaluate.
+    fraction_evaluate: float = 1.0   # 1.0 = every vehicle, as before
     ray_address: str | None = None   # set => attach to an existing head node
 
     @property
@@ -393,7 +399,8 @@ def _cmd_federate(cfg: Config) -> list[str]:
             # parse, and the run would die before the first round.
             f'cache="{cfg.cache}" local_bn={str(cfg.local_bn).lower()} '
             f'freeze_round1={cfg.freeze_round1} server_ema={cfg.server_ema} '
-            f'fix_bn_from_round={cfg.fix_bn_from_round} imgsz={cfg.imgsz}']
+            f'fix_bn_from_round={cfg.fix_bn_from_round} imgsz={cfg.imgsz} '
+            f'fraction_evaluate={cfg.fraction_evaluate}']
 
 
 def _cmd_verify(_: Config) -> list[str]:
