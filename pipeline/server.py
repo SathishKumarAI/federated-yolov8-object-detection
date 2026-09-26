@@ -444,6 +444,7 @@ class Handler(BaseHTTPRequestHandler):
                 partition=body.get("partition", Config.partition),
                 local_bn=bool(body.get("local_bn", False)),
                 freeze_round1=int(body.get("freeze_round1", 0) or 0),
+                server_ema=float(body.get("server_ema", 0.0) or 0.0),
                 alpha=float(body.get("alpha", 0.5) or 0.5),
                 size_skew=float(body.get("size_skew", 0.0) or 0.0),
                 gpu_fraction=float(raw_fraction) if raw_fraction not in (None, "") else 1.0,

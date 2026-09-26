@@ -307,6 +307,14 @@ def build_parser() -> argparse.ArgumentParser:
                          "changes nothing until it is set. Measured motivation: the "
                          "warm-started model scored 0.2582 on the holdout untrained "
                          "and 0.2073 after two rounds")
+    ap.add_argument("--server-ema", type=float, default=0.0, metavar="D",
+                    help="exponentially average the aggregate across rounds at decay D "
+                         "(bias-corrected, so round 1 is the aggregate itself). 0 = off. "
+                         "The fleet otherwise ends every round on an unsmoothed model "
+                         "while the centralised ceiling does not, because ultralytics "
+                         "rebuilds its own EMA per round with updates=0. The clients "
+                         "continue from the smoothed model, so this is a different "
+                         "federation, not a reporting change")
     ap.add_argument("--local-bn", action="store_true",
                     help="FedBN: every vehicle keeps its own BatchNorm and takes the "
                          "rest from the aggregate. Aimed at CONDITION partitioning, "
@@ -330,6 +338,7 @@ def main(argv=None) -> int:
                  per_vehicle_override=args.per_vehicle,
                  gpu_fraction=args.gpu_fraction, cache=args.cache,
                  local_bn=args.local_bn, freeze_round1=args.freeze_round1,
+                 server_ema=args.server_ema,
                  ray_address=args.ray_address)
     if not 0 < cfg.gpu_fraction <= 1:
         # Ray accepts a fraction above 1 and then schedules nothing, so the run hangs
