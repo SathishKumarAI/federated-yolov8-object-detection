@@ -163,3 +163,28 @@ def test_integer_buffers_survive_aggregation():
         "if this ever stops being 0, flwr fixed it and `inplace=False` can go"
     assert float(aggregate([([np.array(89, dtype=np.int64)], 1400)] * 2)[0]) == 89.0, \
         "the copying path is the one that keeps the counter"
+
+
+def test_the_aggregate_keeps_the_architecture_dtypes():
+    """FedAvg's copying path returns every array as float64, counters included.
+
+    That breaks the round-trip identity rather than merely looking untidy: a float-only
+    checksum then counts 57 values the clients excluded. Measured the day it appeared --
+    the server published 4643.564230 against a weighted mean of -429.435242, a difference
+    of exactly 57 x 89. The aggregate of a state_dict is a state_dict.
+    """
+    import numpy as np
+
+    from my_project.get_set_model import learning_checksum
+    from my_project.server_app import as_state_dict_dtypes
+
+    reference = [np.zeros(3, dtype=np.float32), np.array(0, dtype=np.int64)]
+    aggregated = [np.array([1.5, 2.5, 3.0], dtype=np.float64),
+                  np.array(89.0, dtype=np.float64)]      # what aggregate() hands back
+
+    assert learning_checksum(aggregated) == 96.0, "the counter is being counted: 7 + 89"
+
+    restored = as_state_dict_dtypes(aggregated, reference)
+    assert [a.dtype for a in restored] == [np.dtype(np.float32), np.dtype(np.int64)]
+    assert learning_checksum(restored) == 7.0, "and now it is not"
+    assert int(restored[1]) == 89, "while the counter itself survives"

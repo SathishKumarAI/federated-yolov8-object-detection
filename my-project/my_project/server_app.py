@@ -115,6 +115,27 @@ def round_config(server_round: int, num_rounds: int, local_epochs: int, *,
     }
 
 
+def as_state_dict_dtypes(weights, reference):
+    """Cast an aggregate back to the architecture's own dtypes.
+
+    FedAvg's copying path divides every array by the example total, so **all** 355 arrays
+    come back float64 -- including the 57 int64 BatchNorm counters. That is not merely
+    untidy: `learning_checksum` selects floating-point arrays, so the server would start
+    counting 57 values the clients had excluded, and the round-trip identity in
+    `pipeline/roundtrip.py` would read 5 073 too high. Measured the day it was introduced:
+    published 4643.564230 against a weighted mean of -429.435242, a difference of exactly
+    57 x 89.
+
+    The aggregate of a state_dict is a state_dict. Restoring the dtypes at the point of
+    aggregation keeps the checksum, the checkpoint and the broadcast all agreeing with the
+    clients, rather than patching each of them separately.
+    """
+    out = []
+    for arr, ref in zip(weights, reference):
+        out.append(arr.astype(ref.dtype) if arr.dtype != ref.dtype else arr)
+    return out
+
+
 def evaluate_floor(fraction_evaluate: float, min_clients: int) -> int:
     """How few clients may evaluate a round -- NOT the same number as for fit.
 
@@ -194,6 +215,9 @@ class BatchAssignmentMixin:
         self.server_ema = float(server_ema)
         self._ema_weights: Optional[NDArrays] = None
         self._ema_rounds = 0
+        # The architecture's own dtypes, read once from the model this server holds for
+        # checkpointing. Used to put the integer buffers back after aggregation.
+        self._reference_arrays: Optional[NDArrays] = None
         logger.info(
             f"[Server] {type(self).__name__} initialized with batch_id_range={batch_id_range}, "
             f"aggregation={type(self).__mro__[2].__name__} (proximal_mu={self.proximal_mu})"
@@ -237,6 +261,17 @@ class BatchAssignmentMixin:
         logger.debug(f"[Server] Assigned new batch_id={batch_id} to client {client_id}")
         return batch_id
     
+    def _ensure_save_model(self):
+        """The YOLO this server holds to write checkpoints from, built once.
+
+        Also the source of the architecture's dtypes, which is why it is no longer built
+        lazily inside the save: the aggregate needs its integer buffers restored on every
+        round, not only on the rounds that happen to checkpoint.
+        """
+        if self._save_model is None:
+            self._save_model = YOLO(NUM_CLASSES_MODEL_YAML).load(MODEL_PATH)
+        return self._save_model
+
     def _save_global_model(self, weights, server_round: int) -> None:
         """
         Save the aggregated global weights as a self-contained YOLO checkpoint.
@@ -247,8 +282,7 @@ class BatchAssignmentMixin:
         a checkpointing error must not abort the federation.
         """
         try:
-            if self._save_model is None:
-                self._save_model = YOLO(NUM_CLASSES_MODEL_YAML).load(MODEL_PATH)
+            self._ensure_save_model()
             if not set_weights(self._save_model.model, weights):
                 logger.error(f"[Server] Round {server_round}: set_weights failed; skipping checkpoint.")
                 return
@@ -481,9 +515,13 @@ class BatchAssignmentMixin:
         if parameters is not None:
             # Calculate parameters checksum for verification
             weights = parameters_to_ndarrays(parameters)
+            # Put the integers back before anything reads this. See as_state_dict_dtypes.
+            if self._reference_arrays is None:
+                self._reference_arrays = get_weights(self._ensure_save_model().model)
+            weights = as_state_dict_dtypes(weights, self._reference_arrays)
             if self.server_ema > 0:
                 weights = self._apply_server_ema(weights, server_round)
-                parameters = fl.common.ndarrays_to_parameters(weights)
+            parameters = fl.common.ndarrays_to_parameters(weights)
             weights_checksum = learning_checksum(weights)
             logger.info(f"[Server] Aggregated parameters with checksum: {weights_checksum}")
 
