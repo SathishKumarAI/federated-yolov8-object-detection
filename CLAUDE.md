@@ -20,6 +20,7 @@ whole flow and visualises a simulated vehicle fleet while it runs.
 | How do I run the model live on other machines? | [`docs/REALTIME_NODES.md`](docs/REALTIME_NODES.md) |
 | What should I build? | [`docs/BACKLOG_100.md`](docs/BACKLOG_100.md) |
 | **Are the shards' pixels and labels actually what they claim?** | [`docs/DATA_VALIDATION.md`](docs/DATA_VALIDATION.md) |
+| **Why is accuracy where it is, and what do the papers say?** | [`docs/findings/2026-09-26-accuracy-findings.md`](docs/findings/2026-09-26-accuracy-findings.md) |
 | How do I run any of it? | [`pipeline/README.md`](pipeline/README.md) |
 | Where did the last session stop? | [`STATUS.md`](STATUS.md) and `docs/prompts/` |
 
