@@ -19,6 +19,7 @@ whole flow and visualises a simulated vehicle fleet while it runs.
 | **What does Flower × YOLO actually need, measured?** | [`docs/FEDERATED_DETECTION.md`](docs/FEDERATED_DETECTION.md) |
 | How do I run the model live on other machines? | [`docs/REALTIME_NODES.md`](docs/REALTIME_NODES.md) |
 | What should I build? | [`docs/BACKLOG_100.md`](docs/BACKLOG_100.md) |
+| **Are the shards' pixels and labels actually what they claim?** | [`docs/DATA_VALIDATION.md`](docs/DATA_VALIDATION.md) |
 | How do I run any of it? | [`pipeline/README.md`](pipeline/README.md) |
 | Where did the last session stop? | [`STATUS.md`](STATUS.md) and `docs/prompts/` |
 
@@ -49,6 +50,7 @@ Open the one file that owns the thing. Do not read the package to find it.
 | The shared holdout, and scoring the global model on it | `pipeline/holdout.py` |
 | The centralised baseline, and the gap to it | `pipeline/baseline.py` |
 | What makes a fleet's shards invalid | `pipeline/validate.py` |
+| Decoding sampled images and checking their labels against BDD's own JSON | `pipeline/spotcheck.py` |
 | Comparing runs to each other | `pipeline/compare.py` |
 | Running a set of configurations and tabling them | `pipeline/experiment.py` |
 | The human-facing runbook | `docs/RUNBOOK.md`, `scripts/run_pipeline.{ps1,sh}` |
@@ -255,9 +257,13 @@ of them. Re-run the probes before believing them on 8.4.138.
   memory, use **0.5** (two clients, still 1.50×). The pipeline halted correctly rather
   than reporting a short run as a finished one: Ray exits **0** after an actor dies, and
   the runner's output inspection is the only thing that catches it.
-- Condition partitioning is only real while the condition has images: `overcast
-  residential` has 1 419 in all of BDD100K. Asking for more per vehicle silently tops up
-  with random images and turns a non-IID run into a nearly-IID one. `--size-skew`
+- Condition partitioning is only real while the condition has images, and the number
+  that decides a shard is the **locally reachable** one, not BDD100K's: `overcast
+  residential` has 1 419 in all of BDD100K but **685** in the pool on this machine, and
+  `parking / tunnel` has **319**. At 1 400 per vehicle those two profiles are 51 % and
+  77 % random top-up — measured, see
+  [`docs/DATA_VALIDATION.md`](docs/DATA_VALIDATION.md). Asking for more per vehicle
+  silently tops up with random images and turns a non-IID run into a nearly-IID one. `--size-skew`
   sharpens this: the fleet total is preserved, so a large skew hands one vehicle several
   times `per_vehicle` and that vehicle is the one whose condition runs dry first.
 

@@ -2404,3 +2404,25 @@ def test_the_profiler_says_which_lever_the_measurement_points_at():
     concurrent_overhead = {"episodes": 6, "max_concurrent": 3, "train_share": 0.40}
     lines = " ".join(_profile.verdict(concurrent_overhead))
     assert "CONCURRENT" in lines and "AROUND-TRAINING" in lines
+
+
+def test_bdd_box_reconstruction_keeps_bikes_and_motors():
+    """BDD calls them `bike` and `motor`; this project's classes are `bicycle` and
+    `motorcycle`. Miss the aliases and the spot-check reports "one box too many" for
+    every image containing either, which is a checker bug wearing a data bug's
+    clothes -- it did exactly that on its first run. `lane` and `drivable area` carry
+    poly2d and must stay out."""
+    from pipeline import spotcheck
+
+    rec = {"labels": [
+        {"category": "bike", "box2d": {"x1": 0, "y1": 0, "x2": 1280, "y2": 720}},
+        {"category": "motor", "box2d": {"x1": 640, "y1": 360, "x2": 1280, "y2": 720}},
+        {"category": "lane", "poly2d": [[0, 0]]},
+        {"category": "drivable area", "poly2d": [[0, 0]]},
+    ]}
+    boxes = spotcheck._boxes_from_bdd(rec, 1280, 720)
+
+    assert [b[0] for b in boxes] == [spotcheck.CID["bicycle"], spotcheck.CID["motorcycle"]], \
+        "the two aliases must map onto this project's class ids, and nothing else may"
+    assert boxes[0][1:] == (0.5, 0.5, 1.0, 1.0), "a full-frame box is centre 0.5, size 1.0"
+    assert boxes[1][1:] == (0.75, 0.75, 0.5, 0.5)
