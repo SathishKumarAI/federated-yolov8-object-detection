@@ -6,6 +6,7 @@ is the same four criteria the CI simulation-smoke job uses.
 from __future__ import annotations
 
 import json
+import pathlib
 import re
 import shutil
 import subprocess
@@ -263,6 +264,28 @@ def test_clean_output_is_not_flagged_as_a_crash():
 
 def test_federate_stage_scans_for_crashes():
     assert stages.BY_NAME["federate"].crash_markers, "federate must not trust its exit code"
+
+
+@pytest.fixture
+def _flwr_installed(monkeypatch, tmp_path):
+    """Pretend flwr's executables are beside this interpreter.
+
+    `deploy.executable` and `stages.flwr_launcher` both resolve next to `sys.executable`
+    and raise when nothing is there -- correct at runtime, and fatal in CI, which installs
+    pytest and pyyaml only. Four tests that only ever look at the ARGUMENTS a command is
+    built from were failing for want of a binary they never run. Two of them were mine,
+    two came up the stack unnoticed because `main` has never run this job.
+    """
+    bindir = tmp_path / "Scripts"
+    bindir.mkdir()
+    for name in ("flwr", "flower-superlink", "flower-supernode"):
+        (bindir / f"{name}.exe").write_bytes(b"")
+        (bindir / name).write_bytes(b"")
+    fake_python = bindir / "python.exe"
+    fake_python.write_bytes(b"")
+    monkeypatch.setattr(_deploy.sys, "executable", str(fake_python))
+    monkeypatch.setattr(stages, "PY", str(fake_python))
+    return fake_python
 
 
 @pytest.fixture
@@ -1283,7 +1306,7 @@ def test_the_experiment_driver_passes_through_the_levers_the_runner_has():
 from pipeline import deploy as _deploy  # noqa: E402
 
 
-def test_every_supernode_gets_its_own_clientappio_address():
+def test_every_supernode_gets_its_own_clientappio_address(_flwr_installed):
     """Sharing one is the failure that looks like a hang: the second node binds
     nothing, registers nothing, and the federation waits forever for a client that
     never arrives."""
@@ -1297,7 +1320,7 @@ def test_every_supernode_gets_its_own_clientappio_address():
     assert all("--superlink" in _deploy.supernode_cmd(i, "127.0.0.1:9092") for i in range(5))
 
 
-def test_the_fleet_and_control_ports_are_not_the_same():
+def test_the_fleet_and_control_ports_are_not_the_same(_flwr_installed):
     """9092 is where SuperNodes dial in, 9093 is where `flwr run` submits. Pointing a
     SuperNode at the control port fails in a way that reads as a network problem."""
     assert _deploy.FLEET_PORT != _deploy.CONTROL_PORT
@@ -1330,7 +1353,8 @@ def test_the_federation_entry_is_appended_not_rewritten(tmp_path, monkeypatch):
     assert cfg.read_text(encoding="utf-8").count("[superlink.local-deployment]") == 1
 
 
-def test_the_run_config_the_deployment_submits_matches_the_simulation_one():
+def test_the_run_config_the_deployment_submits_matches_the_simulation_one(
+        _flwr_installed):
     """The two paths build their own command lines. A lever added to one and not the
     other means the deployment silently trains a different configuration -- and the
     keys must all be declared in pyproject or flwr refuses the whole run."""
@@ -1873,8 +1897,8 @@ def test_every_subprocess_is_told_to_write_utf8():
     assert env["FLWR_DISABLE_RUNTIME_DEPENDENCY_INSTALLATION"] == "1"
 
 
-def test_the_flwr_launcher_never_runs_the_blocked_shim():
-    """A run halted at the federate stage with
+def test_the_flwr_launcher_never_runs_the_blocked_shim(_flwr_installed):
+    r"""A run halted at the federate stage with
 
         [WinError 4551] An Application Control policy has blocked this file
 
@@ -1882,13 +1906,13 @@ def test_the_flwr_launcher_never_runs_the_blocked_shim():
     machine, which is what those policies stop -- Smart App Control has already made conda
     unusable here for the same reason. The interpreter runs the same CLI with no .exe to
     block, so the launcher must be an interpreter invocation and must stay one."""
-    import sys
-
     cmd = stages.flwr_launcher()
 
-    assert cmd[0] == sys.executable, "the launcher must be this interpreter"
+    assert cmd[0] == str(_flwr_installed), "the launcher must be this interpreter"
     assert cmd[1] == "-c" and "flwr.cli.app" in cmd[2]
-    assert not any(str(part).endswith(".exe") and "flwr" in str(part).lower()
+    # By basename, not by substring: pytest's tmp_path is named after the test, so the
+    # fake interpreter's own path contains "flwr" and a substring check trips on itself.
+    assert not any(pathlib.Path(str(part)).name.lower().startswith("flwr.")
                    for part in cmd), "the shim is the thing that gets blocked"
 
 

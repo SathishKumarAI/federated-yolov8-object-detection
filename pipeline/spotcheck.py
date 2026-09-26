@@ -28,10 +28,13 @@ import sys
 import time
 from pathlib import Path
 
-import ijson
-from PIL import Image
-
 from . import holdout, paths
+
+# ijson and Pillow are imported inside the functions that need them, not here. Every other
+# module in this package does the same with torch and ultralytics, for the reason CI proved
+# on 2026-09-26: the pipeline test job installs pytest and pyyaml only, so a module-scope
+# import of a third-party package fails the suite on a bare interpreter -- and the test that
+# broke was a pure-arithmetic one that needs neither.
 
 #: The 13 classes in the order the data yaml lists them. BDD's own category strings
 #: differ for two of them, and `lane` / `drivable area` carry poly2d rather than
@@ -78,6 +81,8 @@ def _truth(wanted: set[str]) -> dict[str, dict]:
     The train label JSON is 1.45 GB; ijson keeps the memory flat and the scan stops
     as soon as every sampled name has been seen.
     """
+    import ijson                       # lazy: see the note beside the imports
+
     found: dict[str, dict] = {}
     for js in paths.find_label_jsons():
         if not wanted - found.keys():
@@ -110,6 +115,8 @@ def check(name: str, shard: str, split: str, root: Path,
     say = r["problems"].append
     img_p = root / shard / "images" / split / name
     lab_p = root / shard / "labels" / split / f"{name.rsplit('.', 1)[0]}.txt"
+
+    from PIL import Image              # lazy: see the note beside the imports
 
     try:
         with Image.open(img_p) as im:
