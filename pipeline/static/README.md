@@ -12,6 +12,7 @@ reload. ES modules, no bundler, no CDN, no network at runtime.
 | The run form, launch/stop, the stage table | `js/control.js` | |
 | How state ARRIVES — the event stream, the diff apply, the fallback | `js/stream.js` | |
 | The heartbeat, GPU readouts, criteria, reports, log stream | `js/live.js` | |
+| Checksum ledger, per-class small multiples, round profile, provenance | `js/insight.js` | the panels that make a number harder to believe |
 | The fleet grid, the comparison and divergence charts | `js/fleet.js` | |
 | The per-vehicle drawer | `js/drawer.js` | |
 | The Data tab: counts, mixes, the shard table | `js/data.js` | |
@@ -42,6 +43,12 @@ reload. ES modules, no bundler, no CDN, no network at runtime.
    panel that breaks when the fallback poll kicks in.
 6. **A new condition profile touches two files** — `PROFILES` in
    `pipeline/vehicles.py` and `GLYPHS` in `js/util.js`. Add both in the same commit.
+7. **A value the server does not have renders as `unknown()`, never as a dash.** A
+   dash reads as data, and `0` reads as a measurement. `unknown()` says "not
+   measured" and carries the reason.
+8. **A number on screen cites where it was measured.** The record lives in
+   `pipeline/measurements.py`, whose `--check` mode re-reads the document it names.
+   A panel that prints a figure with no row there is a bug.
 
 ## Server routes it depends on
 
@@ -52,6 +59,8 @@ reload. ES modules, no bundler, no CDN, no network at runtime.
 | `GET /api/state` | everything the panels render, in one response |
 | `GET /api/stream` | SSE: that same state as a snapshot then numbered diffs |
 | `GET /api/events` | SSE: log lines, stage transitions, signals |
+| `GET /api/measurements` | every recorded number the page cites, with its source |
+| `GET /api/profile` | seconds per phase for the last run, plus the verdict |
 | `GET /api/vehicle/<vid>` | shard composition and sample image names |
 | `GET /api/shard-image/<vid>/<name>` | one image out of that vehicle's shard |
 | `GET /api/shard-labels/<vid>/<name>` | that frame's label rows, normalised, for the overlay |

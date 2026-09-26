@@ -24,8 +24,8 @@ from pathlib import Path
 from urllib.parse import unquote
 
 from . import (baseline, dataset_stats, docs_index, gpu, holdout, ledger, logparse,
-               nodes, paths, plan, stages, statestream, train_artifacts,
-               vehicle_metrics, vehicles, verify)
+               measurements, nodes, paths, plan, profile as profiler, stages,
+               statestream, train_artifacts, vehicle_metrics, vehicles, verify)
 from .runner import Run
 from .stages import Config
 
@@ -286,6 +286,23 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(docs_index.index())
         if self.path.split("?")[0] == "/api/plan":
             return self._json(plan.plan(CONFIG))
+        if self.path.split("?")[0] == "/api/measurements":
+            # Static and tiny: the provenance every panel cites. Deliberately NOT part
+            # of /api/state -- it never changes while the server runs, so putting it in
+            # the diff stream would ship it once and then never again, which is fine,
+            # and putting it in the snapshot would ship it to every reconnect.
+            return self._json(measurements.table())
+        if self.path.split("?")[0] == "/api/profile":
+            # Seconds per phase, parsed out of the logs the run already wrote. Costs a
+            # full read of every client log, so it is fetched when someone looks at the
+            # panel rather than on every tick of the state stream.
+            got = profiler.profile()
+            # The verdict is the point: a phase breakdown that leaves the reader to
+            # decide between "clients serialised" and "dataloader starving the GPU"
+            # has not made the measurement useful.
+            if "error" not in got:
+                got = {**got, "verdict": profiler.verdict(got)}
+            return self._json(got)
         if self.path.startswith("/api/vehicle/"):
             return self._vehicle()
         if self.path.split("?")[0] == "/api/train-artifacts":

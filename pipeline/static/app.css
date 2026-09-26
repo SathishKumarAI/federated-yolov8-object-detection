@@ -310,3 +310,52 @@ input[type=search]{width:100%}
 tr.runrow{cursor:pointer}
 tr.runrow:hover td{background:var(--sunk)}
 tr.runrow[data-sel=true] td{background:var(--sunk);box-shadow:inset 2px 0 0 var(--accent)}
+
+/* ------------------------------------------------ truth-density (insight.js)
+   Three components, and none of them is decoration:
+   .unk   a value the server does not have, which must not look like a zero
+   .prov  where a number came from, in the smallest type that is still readable
+   .cls   one class's AP row, with a cold-start marker that is not colour-only */
+.unk{font:500 var(--t-xs)/1.4 var(--mono);color:var(--dim);border:1px dashed var(--line);
+     border-radius:var(--r1);padding:1px 6px;letter-spacing:.02em;white-space:nowrap}
+.prov{font:500 var(--t-xs)/1.6 var(--mono);color:var(--dim)}
+.prov b{color:var(--ink-2)}
+.cite{border-bottom:1px dotted var(--dim);cursor:help}
+.dim{color:var(--dim)}
+
+/* The checksum ledger sits under the heartbeat chart: the delta column is the panel's
+   actual argument, so it is monospaced and right of the value it came from. */
+table.ledger{margin-top:var(--s4)}
+table.ledger td.num,table.ledger th{font-variant-numeric:tabular-nums}
+
+/* Per-class small multiples. A grid rather than a table because each row carries a
+   bar, a sparkline and a metadata line, and a table cell holding all three reads
+   worse than a card does. */
+.classes{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:var(--s3)}
+.cls{background:var(--sunk);border:1px solid var(--line-soft);border-radius:var(--r2);
+     padding:var(--s3)}
+/* Cold-started classes get a left rule AND the words "cold start" -- never colour
+   alone, because the whole claim rests on telling these four from the other nine. */
+.cls.cold{border-left:3px solid var(--warn)}
+.cls .nm{display:flex;align-items:baseline;gap:var(--s2);font-weight:600;
+         font-size:var(--t-md)}
+.cls .nm abbr{margin-left:auto;font:600 10px/1.6 var(--mono);color:var(--warn);
+              text-transform:uppercase;letter-spacing:.06em;text-decoration:none;
+              border:1px solid currentColor;border-radius:999px;padding:0 6px;cursor:help}
+.cls .ap{position:relative;margin:var(--s2) 0;background:var(--bg-2);border-radius:var(--r1);
+         border:1px solid var(--line-soft);padding:2px 7px;overflow:hidden}
+.cls .ap>i{position:absolute;inset:0 auto 0 0;background:var(--accent);opacity:.2}
+.cls.cold .ap>i{background:var(--warn)}
+.cls .ap>span{position:relative;font:600 var(--t-sm)/1.5 var(--mono);
+              font-variant-numeric:tabular-nums}
+.cls .spark{display:block;width:100%;height:32px}
+.cls .spark-none{font:500 var(--t-xs)/32px var(--mono)}
+.cls .meta{font:500 var(--t-xs)/1.5 var(--mono);color:var(--dim);margin-top:4px}
+
+/* Visually hidden but read aloud. For a table caption that would otherwise duplicate
+   the panel heading on screen. */
+.sr-only{position:absolute;width:1px;height:1px;margin:-1px;padding:0;overflow:hidden;
+         clip:rect(0 0 0 0);white-space:nowrap;border:0}
+
+#profileVerdict li{align-items:center}
+#profileRefresh{padding:4px 10px;font-size:var(--t-xs);text-transform:none;letter-spacing:0}

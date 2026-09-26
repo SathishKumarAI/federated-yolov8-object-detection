@@ -121,9 +121,15 @@
              aria-label="Aggregate weight checksum by round"></svg>
       </figure>
     </div>
+    <table class="ledger"><caption class="sr-only">Aggregate checksum by round</caption>
+      <thead><tr><th scope="col">Round</th><th scope="col">Aggregate checksum</th>
+      <th scope="col">Δ from previous</th><th scope="col">Verdict</th></tr></thead>
+      <tbody id="heartLedger"></tbody></table>
     <p class="hint">Equal consecutive values mean the global model is not moving — either
       the clients returned the weights they were sent, or no optimizer step happened.
-      Every other metric on this page can look healthy while that is true.</p>
+      Every other metric on this page can look healthy while that is true. The numbers
+      above are read from the server log's own <code>Aggregated parameters with
+      checksum</code> lines, not computed here.</p>
   </div>
 
   <div class="grid two" style="grid-template-columns:1fr 1fr">
@@ -180,7 +186,8 @@
     <div class="grid two" style="grid-template-columns:minmax(220px,300px) 1fr;align-items:center">
       <div class="readouts">
         <div class="readout"><span class="v skel" id="hMap">—</span>
-          <div class="k">holdout mAP50</div></div>
+          <span class="u" id="hMapSpread"></span>
+          <div class="k">holdout mAP50, best round</div></div>
         <div class="readout"><span class="v skel" id="hCeiling">—</span>
           <div class="k">of the centralised ceiling</div></div>
       </div>
@@ -188,6 +195,7 @@
                    aria-label="Global model mAP50 on the shared holdout, by round"></svg></figure>
     </div>
     <p class="hint" id="holdoutNote"></p>
+    <p class="hint" id="holdoutProvenance"></p>
   </div>
 
   <div class="panel" id="perClassPanel" hidden>
@@ -227,6 +235,15 @@
     <figure><svg class="chart" id="divChart" viewBox="0 0 900 190" role="img"
                  aria-label="Signed distance from the fleet mean, per vehicle"></svg></figure>
     <p class="hint" id="divNote"></p>
+  </div>
+
+  <div class="panel" id="profilePanel">
+    <h2>Where the round's seconds went
+      <span class="n"><button id="profileRefresh">Re-read the logs</button></span></h2>
+    <figure><svg class="chart" id="profileChart" viewBox="0 0 900 200" role="img"
+                 aria-label="Seconds per phase for the last federated run"></svg></figure>
+    <ul class="plain" id="profileVerdict"></ul>
+    <p class="hint" id="profileNote"></p>
   </div>
 
   <div class="grid two" style="grid-template-columns:1fr 1fr">
@@ -283,6 +300,13 @@
 
 <!-- ======================================================================== DOCS -->
 <section id="view-docs" class="grid" hidden role="tabpanel" aria-label="Docs">
+  <div class="panel" id="provenancePanel">
+    <h2>Every number this page quotes, and where it was measured</h2>
+    <div id="provenance"></div>
+    <p class="hint">Read from <code>pipeline/measurements.py</code>, whose
+      <code>--check</code> mode re-reads each cited document and fails if a value has
+      drifted out of it. A number on this dashboard with no row here is a bug.</p>
+  </div>
   <div id="docsBody" class="grid"></div>
 </section>
 

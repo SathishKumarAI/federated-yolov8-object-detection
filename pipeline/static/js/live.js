@@ -1,10 +1,14 @@
-// Live view: polling, the heartbeat, GPU readouts, criteria, reports, log stream.
-import { $, esc } from "./util.js";
+// Live view: the heartbeat, GPU readouts, criteria, reports, log stream.
+//
+// State arrives from stream.js as whole snapshots; this file renders them. The panels
+// whose job is to make a number harder to believe live in insight.js.
+import { $, esc, unknown } from "./util.js";
 import { lineChart } from "./chart.js";
 import { state } from "./state.js";
 import { renderStages, renderOptions } from "./control.js";
 import { renderFleet } from "./fleet.js";
 import { renderNowTraining } from "./consumed.js";
+import { renderPerClass, renderChecksumLedger, measured, record } from "./insight.js";
 
 //: The trainer's own pictures cost an /api/train-artifacts round trip and a directory
 //: listing, so they are not re-read at the rate state now arrives. A vehicle change
@@ -65,8 +69,12 @@ function renderLive(L, cfg) {
   const planned = cfg && cfg.rounds != null && cfg.rounds >= L.rounds_done ? `/${cfg.rounds}` : "";
   $("rRound").textContent    = `${L.rounds_done}${planned}`;
   $("rVehicles").textContent = Object.keys(L.per_vehicle || {}).length || "0";
-  $("rMap").textContent      = evald.length ? evald[evald.length - 1].toFixed(4) : "—";
-  $("rLoss").textContent     = losses.length ? losses[losses.length - 1].toFixed(4) : "—";
+  // A dash here reads as "zero" at a glance, and a self-evaluated mAP is not the
+  // honest number anyway -- the holdout panel below is. So the absence says so.
+  $("rMap").innerHTML  = evald.length ? evald[evald.length - 1].toFixed(4)
+    : unknown("no client has finished an evaluation round yet");
+  $("rLoss").innerHTML = losses.length ? losses[losses.length - 1].toFixed(4)
+    : unknown("no client has reported a loss yet");
   $("rCkpt").textContent     = (L.checkpoints || []).length;
   $("rBar").style.width = cfg && cfg.rounds
     ? Math.min(100, 100 * L.rounds_done / cfg.rounds) + "%" : "0";
@@ -104,18 +112,35 @@ function renderLive(L, cfg) {
   renderHoldout(L.holdout, L.baseline);
 }
 
-/** The one metric no client could have flattered: the shared holdout. */
+/** The one metric no client could have flattered: the shared holdout.
+ *
+ * The band is the measured run-to-run spread, centred on the FIRST scored round: a
+ * later round inside it is indistinguishable from where the run started, whatever the
+ * curve looks like. Drawing it is the difference between "round 6 is better" and
+ * "round 6 is better by more than this measurement can resolve".
+ */
 function renderHoldout(holdout, baseline) {
   const rows = (holdout && holdout.rounds) || [];
+  const floor = measured("noise_floor_map50");
+  const anchor = rows.length ? rows[0].mAP50 : null;
   lineChart("holdoutChart", {
     series: [{ label: "holdout mAP50", color: "var(--ok)", values: rows.map(r => r.mAP50), area: true },
              { label: "mAP50-95", color: "var(--dim)", values: rows.map(r => r["mAP50-95"]), dashed: true }],
     aria: "Global model mAP50 on the shared holdout by round", yFmt: v => v.toFixed(3),
+    band: (floor != null && anchor != null && rows.length > 1)
+      ? { lo: anchor - floor, hi: anchor + floor,
+          label: `±${floor} noise floor around round ${rows[0].round}` }
+      : null,
   });
   const best = rows.length ? Math.max(...rows.map(r => r.mAP50)) : null;
-  $("hMap").textContent = best == null ? "—" : best.toFixed(4);
-  $("hCeiling").textContent = baseline && baseline.retained
-    ? (100 * baseline.retained).toFixed(0) + "%" : "—";
+  $("hMap").innerHTML = best == null
+    ? unknown("no global checkpoint has been scored on the holdout yet")
+    : best.toFixed(4);
+  $("hMapSpread").textContent = best == null || floor == null ? "" : `±${floor}`;
+  $("hCeiling").innerHTML = baseline && baseline.retained
+    ? (100 * baseline.retained).toFixed(0) + "%"
+    : unknown("no centralised baseline has been trained, so this number has no scale");
+  renderHoldoutProvenance(holdout, baseline, rows, floor);
 
   if (!rows.length) {
     $("holdoutNote").innerHTML = "No holdout evaluation yet. Run the " +
@@ -141,60 +166,34 @@ function renderHoldout(holdout, baseline) {
   renderPerClass(rows);
 }
 
-/** What the averaged mAP hides.
- *
- * `car` is 55.4 % of the objects in BDD100K and `train` has 29 instances fleet-wide,
- * so one averaged number over this holdout is close to a car detector's report card.
- * The bar is AP50; the count beside it is why a high bar may mean very little and a
- * low one may be a handful of instances rather than a failure.
- *
- * Classes absent from the holdout are not here at all — see pipeline/holdout.py
- * per_class, which omits them rather than reporting Ultralytics' `maps`, which would
- * hand them the fleet average.
- */
-function renderPerClass(rows) {
-  const last = rows.length ? rows[rows.length - 1].per_class : null;
-  $("perClassPanel").hidden = !(last && last.length);
-  if (!last || !last.length) return;
-
-  const first = {};
-  for (const c of (rows[0].per_class || [])) first[c.class_id] = c;
-  const totalInst = last.reduce((a, c) => a + (c.instances || 0), 0) || 1;
-  const sorted = last.slice().sort((a, b) => (b.instances || 0) - (a.instances || 0));
-
-  $("perClassWhen").textContent = rows.length > 1
-    ? `round ${rows[rows.length - 1].round}, change since round ${rows[0].round}`
-    : `round ${rows[rows.length - 1].round}`;
-
-  $("perClass").innerHTML = '<div class="mix wide">' + sorted.map(c => {
-    const was = first[c.class_id];
-    const d = (was && rows.length > 1) ? c.AP50 - was.AP50 : null;
-    const share = 100 * (c.instances || 0) / totalInst;
-    const delta = d == null ? ""
-      : `<span class="${d >= 0 ? "ok" : "warn"}">${d >= 0 ? "+" : ""}${d.toFixed(3)}</span>`;
-    return `<div class="r"><div class="t"><i style="width:${(100 * c.AP50).toFixed(1)}%"></i>` +
-      `<span>${esc(c.name)}</span></div>` +
-      `<div class="c" title="${c.instances == null ? "?" : c.instances} instances, ` +
-      `${share.toFixed(1)}% of the holdout's objects">${c.AP50.toFixed(3)} ${delta}</div></div>`;
-  }).join("") + "</div>";
-
-  const top = sorted[0];
-  const thin = sorted.filter(c => (c.instances || 0) < 100);
-  $("perClassNote").innerHTML =
-    `Bar is AP50, hover for instance count. <b>${esc(top.name)}</b> alone is ` +
-    `${(100 * (top.instances || 0) / totalInst).toFixed(1)}% of the objects scored here, so the ` +
-    `single mAP50 above is mostly its number.` +
-    (thin.length
-      ? ` ${thin.length} class(es) have under 100 instances (${thin.map(c => esc(c.name)).join(", ")}); ` +
-        `their AP moves a lot for reasons that are not the model.`
-      : "") +
-    ` Classes with no instances in the holdout are omitted rather than scored — ` +
-    `Ultralytics' <code>maps</code> would have given them the fleet average.`;
+/** Which run, which holdout, which fingerprint — and where the ± comes from. */
+function renderHoldoutProvenance(holdout, baseline, rows, floor) {
+  const meta = (holdout && holdout.holdout) || {};
+  const fr = record("noise_floor_map50");
+  const bits = [
+    `holdout: ${meta.size != null ? meta.size + " images" : "size not recorded"}` +
+      `, seed ${meta.seed != null ? meta.seed : "not recorded"}`,
+    `fleet fingerprint: ${meta.fleet_fingerprint || meta.fingerprint || "not recorded"}`,
+    `rounds scored: ${rows.length}`,
+    baseline && baseline.centralised_mAP50 != null
+      ? `ceiling budget ratio: ${baseline.budget_ratio != null ? baseline.budget_ratio + "x" : "not recorded"}`
+      : "ceiling: none trained",
+  ];
+  $("holdoutProvenance").innerHTML =
+    `<span class="prov">${bits.map(esc).join(" · ")}</span>` +
+    (floor == null ? ""
+      : `<br><span class="prov">± is the recorded run-to-run spread of ${floor} mAP50 ` +
+        `from <code>${esc(fr ? fr.source : "?")}</code> (${esc(fr ? fr.measured_on : "?")}), ` +
+        `a <b>${esc(fr ? fr.bound || "point" : "?")}</b> bound and ` +
+        `<b>${esc(fr ? fr.confidence || "measured" : "?")}</b>. ` +
+        `A delta inside the band is not a result; what would change that is a repeated-seed ` +
+        `measurement on this fleet, not a bigger run.</span>`);
 }
 
 /** The signature panel: the one number whose stillness invalidates every other one. */
 export function drawHeartbeat() {
   const v = state.checksums;
+  renderChecksumLedger(v);
   lineChart("heartChart", {
     series: [{ label: "checksum", color: "var(--accent)", values: v, area: true }],
     aria: "Aggregate weight checksum by round",
@@ -205,7 +204,7 @@ export function drawHeartbeat() {
   if (!v.length) {
     lamp.className = "lamp l-idle";
     lamp.textContent = "waiting";
-    $("heartValue").textContent = "—";
+    $("heartValue").innerHTML = unknown("no round has been aggregated yet");
     $("heartSub").textContent = "No aggregate yet. The federate stage produces one per round.";
     return;
   }
@@ -224,11 +223,15 @@ export function drawHeartbeat() {
 
 function renderGpu(g) {
   if (!g) return;
-  $("gUtil").textContent   = g.util_pct ?? "—";
-  $("gMem").textContent    = g.mem_used_mib ? Math.round(g.mem_used_mib) : "—";
-  $("gPower").textContent  = g.power_w ?? "—";
-  $("gEnergy").textContent = (g.energy_wh ?? 0).toFixed(2);
-  $("gTemp").textContent   = g.temp_c ?? "—";
+  // nvidia-smi absent is a different fact from a GPU reading zero, and this project
+  // has a machine where the difference decides whether a run is on CPU at 5.5x.
+  const nosmi = unknown("nvidia-smi returned nothing -- no GPU, or no driver on PATH");
+  const num = (x, dp) => x == null ? nosmi : (dp == null ? String(x) : x.toFixed(dp));
+  $("gUtil").innerHTML   = num(g.util_pct);
+  $("gMem").innerHTML    = g.mem_used_mib == null ? nosmi : String(Math.round(g.mem_used_mib));
+  $("gPower").innerHTML  = num(g.power_w);
+  $("gEnergy").innerHTML = g.energy_wh == null ? nosmi : g.energy_wh.toFixed(2);
+  $("gTemp").innerHTML   = num(g.temp_c);
   $("gUtilBar").style.width = (g.util_pct || 0) + "%";
   const pct = g.mem_used_mib ? 100 * g.mem_used_mib / (g.mem_ceiling_mib || 16303) : 0;
   $("gMemBar").style.width = Math.min(100, pct) + "%";

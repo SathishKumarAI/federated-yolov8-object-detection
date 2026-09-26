@@ -14,13 +14,15 @@ from __future__ import annotations
 
 import argparse
 
-from . import holdout, stages, vehicles
+from . import holdout, measurements, stages, vehicles
 from .stages import Config
 
-#: Measured on an RTX 5070 Ti, 6 vehicles x 1 400 images x 6 rounds x 4 epochs:
-#: 3 296 s and 82.2 Wh for 201 600 image-visits at 640 px.
-SECONDS_PER_KVISIT = 3296 / 201.6
-WH_PER_KVISIT = 82.2 / 201.6
+# Measured on an RTX 5070 Ti, 6 vehicles x 1 400 images x 6 rounds x 4 epochs: 3 296 s
+# and 82.2 Wh for 201 600 image-visits at 640 px. Imported rather than restated -- the
+# same two numbers drive the projection panel and the report, and a measured constant
+# that lives in three files is a constant that will disagree with itself.
+SECONDS_PER_KVISIT = measurements.value("seconds_per_kvisit")
+WH_PER_KVISIT = measurements.value("wh_per_kvisit")
 
 
 def budget(cfg: Config) -> dict:
@@ -75,7 +77,7 @@ def warnings(cfg: Config) -> list[str]:
                    "scoring itself on its own distribution, and comparable with nothing.")
     if cfg.partition == "condition":
         # BDD's rarest profiled condition; asking for more silently tops up.
-        thinnest = 1419
+        thinnest = measurements.value("thinnest_condition")
         if cfg.per_vehicle > thinnest:
             out.append(f"{cfg.per_vehicle} images per vehicle exceeds the rarest condition "
                        f"(~{thinnest} images in all of BDD100K), so those shards will top up "

@@ -11,6 +11,7 @@ import { loadPlan } from "./plan.js";
 import { loadDocs } from "./docs.js";
 import { loadMetrics } from "./metrics.js";
 import { pollEdge } from "./edge.js";
+import { loadMeasurements, loadProfile, renderProvenance } from "./insight.js";
 
 const VIEWS = ["control", "live", "data", "metrics", "plan", "docs"];
 
@@ -26,16 +27,22 @@ function showView(tab) {
   if (want === "data") loadData(false);
   if (want === "plan") loadPlan();
   if (want === "metrics") loadMetrics(true);
-  if (want === "docs") loadDocs();
+  if (want === "docs") { renderProvenance(); loadDocs(); }
+  // The profile reads every client log end to end, so it is loaded on first sight of
+  // the Live tab and then only when asked -- never on a state tick.
+  if (want === "live" && !profileLoaded) { profileLoaded = true; loadProfile(); }
 }
+let profileLoaded = false;
 document.querySelectorAll(".tab").forEach(t => { t.onclick = () => showView(t); });
+$("profileRefresh").onclick = () => loadProfile();
 
 wireControl(() => showView(document.querySelector('.tab[data-view=live]')));
 enableChartCursor();
 connectEvents();
-// State arrives as a snapshot then numbered diffs; polling is only the fallback
-// stream.js falls back to when /api/stream never connects.
-connectState(applyState);
+// The measurement table first: every panel that prints a +/- or cites a source reads
+// it, and a panel that rendered before it arrived would quietly print nothing where a
+// provenance line belongs.
+loadMeasurements().then(() => connectState(applyState));
 // Its own loop, not part of poll(): edge nodes are live whether or not a federation
 // is running, and /api/nodes must not be coupled to the run-state snapshot.
 pollEdge();

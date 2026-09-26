@@ -2438,7 +2438,7 @@ def test_api_state_still_answers_for_anything_that_wants_the_whole_thing(monkeyp
     _, httpd = _serve(monkeypatch, fake)
     try:
         conn = http.client.HTTPConnection("127.0.0.1", httpd.server_address[1], timeout=10)
-        conn.request("GET", "/api/state")
+        conn.request("GET", "/api/state", headers={"Connection": "close"})
         assert json.loads(conn.getresponse().read()) == fake
         conn.close()
     finally:
@@ -2458,3 +2458,145 @@ def test_one_snapshot_serves_every_watcher(monkeypatch):
     for _ in range(20):
         srv.STATE.current(Config())
     assert len(calls) == 1, f"recomputed {len(calls)} times inside one TTL"
+
+
+# ------------------------------------------------- measured numbers, with provenance
+from pipeline import measurements as _meas  # noqa: E402
+
+
+def test_every_measurement_still_matches_the_document_it_cites():
+    """A dashboard that cites a doc which no longer says that is worse than one that
+    cites nothing: it launders a stale number through a real filename."""
+    problems = _meas.drift()
+    assert not problems, "\n".join(problems)
+
+
+def test_no_measurement_ships_without_its_provenance():
+    """The rule the module exists to enforce. A record with an empty source is a guess
+    wearing a measurement's clothes, and the UI would print it with a citation."""
+    for rec in _meas.RECORDS:
+        for field in ("id", "label", "unit", "source", "quote", "note", "measured_on"):
+            assert rec.get(field), f"{rec.get('id')!r} has no {field}"
+        assert rec["value"] is not None, rec["id"]
+        assert len(rec["note"]) > 40, f"{rec['id']}: the note must say how it misleads"
+    ids = [r["id"] for r in _meas.RECORDS]
+    assert len(ids) == len(set(ids)), "duplicate measurement id"
+
+
+def test_the_plan_and_the_measurement_table_cannot_disagree():
+    """The cost constants used to live in plan.py only. The projection panel and the
+    report need the same two numbers, and a measured constant in three files is a
+    constant that will disagree with itself."""
+    from pipeline import plan as _plan
+
+    assert _plan.SECONDS_PER_KVISIT == _meas.value("seconds_per_kvisit")
+    assert _plan.WH_PER_KVISIT == _meas.value("wh_per_kvisit")
+
+
+def test_the_warm_start_list_is_a_subset_of_the_label_set():
+    """The per-class panel divides the 13 classes into warm-started and cold. A name
+    that matches nothing would silently move a class into the wrong group, which is the
+    one thing that panel exists to get right."""
+    assert set(_meas.WARM_STARTED_CLASSES) <= set(_meas.BDD_CLASSES)
+    assert len(_meas.BDD_CLASSES) == 13
+    assert set(_meas.UNWARMED_CLASSES) == {"rider", "trailer", "other person",
+                                           "other vehicle"}
+
+
+def test_a_missing_measurement_raises_rather_than_defaulting():
+    """`value()` returning None on a typo would put a blank where a +/- belongs, and
+    the panel would look finished."""
+    with pytest.raises(KeyError):
+        _meas.value("no_such_measurement")
+
+
+def test_the_retention_headline_is_the_two_numbers_it_claims_to_be():
+    """0.845 is not an independent measurement; it is 0.4173 / 0.4936. If those three
+    records ever stop agreeing, one of them was edited without the others."""
+    got = _meas.value("federated_map50") / _meas.value("centralised_map50")
+    assert abs(got - _meas.value("retained")) < 0.001, got
+
+
+def test_the_measurement_table_is_served_over_http(monkeypatch):
+    import http.client
+
+    _, httpd = _serve(monkeypatch, {"busy": False})
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", httpd.server_address[1], timeout=10)
+        conn.request("GET", "/api/measurements", headers={"Connection": "close"})
+        got = json.loads(conn.getresponse().read())
+        assert {r["id"] for r in got["records"]} == {r["id"] for r in _meas.RECORDS}
+        assert got["classes"]["unwarmed"] == _meas.UNWARMED_CLASSES
+        conn.close()
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+
+
+def test_the_profile_route_carries_the_verdict_not_only_the_seconds(monkeypatch):
+    """Phase 0 exists to choose between two opposite fixes. Serving the breakdown
+    without the verdict hands that choice back to whoever is reading the page."""
+    import http.client
+
+    from pipeline import server as srv
+
+    fake = {"server_log": "server.1.log", "client_logs": [], "wall_s": 100.0,
+            "phases": {"train": 85.0}, "unaccounted_s": 15.0, "episodes": 6,
+            "max_concurrent": 1, "train_share": 0.85}
+    monkeypatch.setattr(srv.profiler, "profile", lambda *a, **k: dict(fake))
+    _, httpd = _serve(monkeypatch, {"busy": False})
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", httpd.server_address[1], timeout=10)
+        conn.request("GET", "/api/profile", headers={"Connection": "close"})
+        got = json.loads(conn.getresponse().read())
+        assert "SERIALISED" in " ".join(got["verdict"])
+        assert "IN-TRAINING" in " ".join(got["verdict"])
+        conn.close()
+
+        # And an unprofilable run says so instead of inventing a breakdown of zeros.
+        monkeypatch.setattr(srv.profiler, "profile", lambda *a, **k: {"error": "no server log"})
+        conn = http.client.HTTPConnection("127.0.0.1", httpd.server_address[1], timeout=10)
+        conn.request("GET", "/api/profile", headers={"Connection": "close"})
+        got = json.loads(conn.getresponse().read())
+        assert got == {"error": "no server log"} and "verdict" not in got
+        conn.close()
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+
+
+def test_the_insight_panels_never_call_a_stuck_fleet_moving(tmp_path):
+    """The ledger's verdict overrides every other number on the page. Executed, not
+    read: `647.578 -> 647.578` is the B4 bug, and it must not render as progress."""
+    _run_js_check(tmp_path, "insight_panels.mjs")
+
+
+def test_no_panel_prints_an_em_dash_where_a_measurement_is_missing():
+    """A dash reads as data. Every view module that shows a value the server may not
+    have uses `unknown()`, which says "not measured" and why.
+
+    Scoped to the value slots this rule is about -- a readout, a big number, a
+    per-class cell -- not to prose, which is allowed its punctuation.
+    """
+    js = (REPO / "pipeline" / "static" / "js")
+    offenders = {}
+    for path in sorted(js.glob("*.js")):
+        src = path.read_text(encoding="utf-8")
+        # `$("x").textContent = ... "—"` is the shape that puts a dash in a value slot.
+        for m in re.finditer(r'\$\("(\w+)"\)\.(?:textContent|innerHTML)\s*=[^;\n]*"—"', src):
+            offenders.setdefault(path.name, []).append(m.group(1))
+    assert not offenders, (f"these value slots fall back to an em dash instead of "
+                          f"unknown(): {offenders}")
+    # Guard the guard: the regex has to be able to match at all.
+    assert re.search(r'\$\("(\w+)"\)\.(?:textContent|innerHTML)\s*=[^;\n]*"—"',
+                     '$("x").textContent = a ? b : "—";')
+
+
+def test_every_dashboard_module_loads(tmp_path):
+    """No build step means nothing checks that a module parses until a browser loads it.
+
+    A module that throws at import time takes the whole page down and the failure looks
+    like panels that simply never fill in -- the page renders, the chrome is there, and
+    nothing says why. Executed under node against a DOM that answers but holds nothing.
+    """
+    _run_js_check(tmp_path, "modules_load.mjs")

@@ -30,11 +30,15 @@ Open the one file that owns the thing. Do not read the package to find it.
 |---|---|
 | A dashboard panel's look, or any colour, spacing, type | `pipeline/static/app.css` |
 | Dashboard markup, a new panel, an element id | `pipeline/static/index.html` |
-| Chart axes, ticks, tooltips, sparkline | `pipeline/static/js/chart.js` |
+| Chart axes, ticks, tooltips, sparkline, the noise band | `pipeline/static/js/chart.js` |
+| How state reaches the browser, and the polling fallback | `pipeline/static/js/stream.js` |
+| Checksum ledger, per-class small multiples, round profile, provenance | `pipeline/static/js/insight.js` |
 | The fleet grid / vehicle drawer / live polling / run form | `pipeline/static/js/{fleet,drawer,live,control}.js` |
 | Label boxes drawn over a frame, the trainer's own pictures | `pipeline/static/js/consumed.js` |
 | Which of ultralytics' output pictures are served, and their captions | `pipeline/train_artifacts.py` — `KINDS` |
 | An HTTP route or what `/api/state` returns | `pipeline/server.py` |
+| The state push: the diff format, the sequence, the SSE frames | `pipeline/statestream.py` |
+| **A measured number the UI quotes, or its provenance** | `pipeline/measurements.py` — nowhere else |
 | The live edge fleet: what a node may report, and its bounds | `pipeline/nodes.py` |
 | The edge node itself — camera, inference, heartbeat | `pipeline/edge.py` |
 | The live-nodes panel | `pipeline/static/js/edge.js` |
