@@ -53,9 +53,14 @@ function runsTable(runs) {
         ? '<span class="chip down" title="the federation scored above its own ceiling: that ceiling is stale or was never matched">suspect</span>'
         : (res.retained != null && res.budget_matched === false
           ? '<span class="chip flat" title="the ceiling had a different budget, so this is a bound">bound</span>' : "");
+      const old_transport = r.era && r.era.transport === "ema-fp16-best";
+      const eraChip = r.era
+        ? `<span class="chip ${old_transport ? "flat" : "up"}" title="${esc(r.era.note)} ` +
+          `Evidence: ${esc(r.era.evidence)}.">${old_transport ? "old transport" : "fp32"}</span>`
+        : "";
       return `<tr class="runrow" data-run="${esc(r.run)}" data-sel="${selected === r.run}">` +
         `<td><button class="linky" data-run="${esc(r.run)}">${esc(r.run)}</button></td>` +
-        `<td style="font-size:var(--t-sm)">${esc(r.approach)}</td>` +
+        `<td style="font-size:var(--t-sm)">${esc(r.approach)} ${eraChip}</td>` +
         `<td class="num">${v.visits.toLocaleString()}</td>` +
         `<td class="num">${min(r.time.seconds)}</td>` +
         `<td class="num">${(r.cost.energy_wh || 0).toFixed(1)}</td>` +

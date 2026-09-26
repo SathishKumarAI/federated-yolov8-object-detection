@@ -15,6 +15,7 @@
 // It launches nothing. The only thing it can do to the rest of the page is fill in the
 // run form on the Control tab, which still needs a human to press Launch.
 import { $, esc, empty } from "./util.js";
+import { leverNote, loadMeasurements } from "./insight.js";
 
 const FIELDS = ["simVehicles", "simPerVehicle", "simRounds", "simEpochs", "simPartition",
                 "simStrategy", "simImgsz", "simGpuFraction"];
@@ -49,6 +50,7 @@ export async function loadSimulation() {
     return;
   }
   last = pr;
+  await loadMeasurements();
   render(pr);
 }
 
@@ -62,6 +64,7 @@ const num = (v) => typeof v === "number"
   ? (Number.isInteger(v) ? v.toLocaleString() : String(v)) : String(v);
 
 function value(row) {
+  if (row.status === "hazard") return `<span class="hazard">${esc(String(row.value))}</span>`;
   if (row.status === "refused") return '<span class="refused">refused</span>';
   if (Array.isArray(row.value)) return `${num(row.value[0])} – ${num(row.value[1])}`;
   return num(row.value);
@@ -97,7 +100,8 @@ function render(pr) {
       `<th scope="col">Rests on</th><th scope="col">How, and where it can be wrong</th>` +
       `</tr></thead><tbody>` +
       pr.projections.map(row =>
-        `<tr class="${row.status === "refused" ? "refused-row" : ""}">` +
+        `<tr class="${row.status === "refused" ? "refused-row"
+          : row.status === "hazard" ? "hazard-row" : ""}">` +
         `<td><b>${esc(row.name)}</b></td>` +
         `<td class="num">${value(row)} <span class="dim">${esc(row.unit)}</span></td>` +
         `<td>${row.rests_on.length
@@ -156,6 +160,20 @@ function render(pr) {
     (pr.imgsz_reachable ? "" :
       `<div class="panel"><h2>One of these is not a setting</h2>` +
       `<p class="hint warn">${esc(pr.imgsz_note)}</p></div>`) +
+
+    `<div class="panel"><h2>Levers this run could pull` +
+      `<span class="n">set them on the Control tab</span></h2>` +
+      `<table><thead><tr><th scope="col">Lever</th><th scope="col">This server</th>` +
+      `<th scope="col">What it does, and how it misleads</th></tr></thead><tbody>` +
+      Object.entries(pr.levers || {}).map(([name, ok]) =>
+        `<tr><td><code>${esc(name)}</code></td>` +
+        `<td><span class="lamp ${ok ? "s-ok" : "s-skipped"}">` +
+        `${ok ? "available" : "not implemented"}</span></td>` +
+        `<td style="color:var(--ink-2)">${leverNote(name) ||
+          esc((pr.lever_notes || {})[name] || "")}</td></tr>`).join("") +
+      `</tbody></table><p class="hint">None of these changes the cost projection above: ` +
+      `they change what the resulting number <em>means</em>. <code>imgsz</code> is the ` +
+      `exception, and its cost above 640 px is refused rather than guessed.</p></div>` +
 
     (pr.warnings.length
       ? `<div class="panel"><h2>Before you spend the hours</h2><ul class="plain">` +

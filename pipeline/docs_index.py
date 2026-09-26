@@ -107,6 +107,14 @@ ROLES: dict[str, dict] = {
                        "no longer says that.",
         "tab": "all",
     },
+    "demo_run": {
+        "command": "python -m pipeline.demo_run",
+        "contributes": "One recorded run, replayable with no GPU and no data, in the "
+                       "shape /api/state returns -- so the walkthrough teaches with the "
+                       "real panels. Every number is transcribed from a document here, "
+                       "and the fields nobody measured are absent with a written reason.",
+        "tab": "Live",
+    },
     "statestream": {
         "command": "python -m pipeline.statestream",
         "contributes": "The diff format behind the dashboard's push stream. An idle "

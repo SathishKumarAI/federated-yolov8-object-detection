@@ -29,6 +29,12 @@ from . import (baseline, dataset_stats, demo_run, docs_index, gpu, holdout, ledg
 from .runner import Run
 from .stages import Config
 
+#: Run levers the dashboard offers, each the name of a `Config` field. Which of them the
+#: running server actually has is answered by `Config.__dataclass_fields__`, not by this
+#: list: the plumbing for these lives on the ML side, and a dashboard that offered one
+#: the server could not apply would be posting a field into a void.
+LEVERS = ("freeze_round1", "server_ema", "fix_bn_from_round", "imgsz", "local_bn")
+
 STATIC = Path(__file__).resolve().parent / "static"
 HISTORY_LIMIT = 500
 
@@ -217,7 +223,14 @@ class State:
             },
             "links": {"mlflow": "http://127.0.0.1:5000", "ray": "http://127.0.0.1:8265"},
             "options": {"partitions": list(vehicles.PARTITIONS),
-                        "strategies": list(stages.STRATEGIES)},
+                        "strategies": list(stages.STRATEGIES),
+                        # Derived from Config rather than listed, so a lever the running
+                        # server does not implement cannot be offered in the form as
+                        # though it worked. A body field this server has never heard of
+                        # is silently dropped -- exactly the shape of no-op this project
+                        # keeps shipping -- so the UI disables the control and says so.
+                        "levers": {name: name in Config.__dataclass_fields__
+                                   for name in LEVERS}},
             "results": [r.__dict__ for r in (self.run.results if self.run else [])],
             "live": self.live(),
             "reports": self.reports(),
@@ -300,7 +313,11 @@ class Handler(BaseHTTPRequestHandler):
             # of /api/state -- it never changes while the server runs, so putting it in
             # the diff stream would ship it once and then never again, which is fine,
             # and putting it in the snapshot would ship it to every reconnect.
-            return self._json(measurements.table())
+            # The observed spread is computed here rather than inside `table()` so the
+            # measurement table stays pure data: this half reads the run ledger off
+            # disk, and a spread from this machine's own repeats beats a recorded one.
+            return self._json({**measurements.table(),
+                               "observed_spread": measurements.observed_spread(ledger.load())})
         if self.path.split("?")[0] == "/api/profile":
             # Seconds per phase, parsed out of the logs the run already wrote. Costs a
             # full read of every client log, so it is fetched when someone looks at the

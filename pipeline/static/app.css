@@ -407,3 +407,29 @@ body[data-tour="1"] main{padding-bottom:280px}
 .demobanner p{margin:0}
 .demobanner b{color:var(--warn)}
 .demobanner em{font-style:normal;font-family:var(--mono);font-size:var(--t-sm)}
+
+/* --------------------------------------------------------- run levers (control.js)
+   A lever this server cannot apply is struck out and disabled, never merely greyed:
+   greyed-out reads as "not set yet", and a control that posts into a void while
+   looking enabled is the exact no-op shape this project keeps shipping. */
+.subhead{font:600 var(--t-xs)/1.4 var(--mono);text-transform:uppercase;letter-spacing:.12em;
+         color:var(--dim);margin:var(--s5) 0 var(--s3);display:flex;align-items:center;
+         gap:var(--s2)}
+.subhead .n{margin-left:auto;font-weight:500;letter-spacing:.04em;text-transform:none}
+.levers .lever[data-unsupported="true"] label{text-decoration:line-through;
+                                              text-decoration-color:var(--bad)}
+.levers .lever[data-unsupported="true"]::after{content:"not on this server";
+  display:block;margin-top:3px;font:600 10px/1.4 var(--mono);color:var(--bad);
+  text-transform:uppercase;letter-spacing:.06em}
+#leverHelp{margin-top:var(--s3)}
+#leverHelp summary{cursor:pointer;color:var(--dim);font:500 var(--t-sm)/1.6 var(--mono)}
+#leverHelp summary:hover{color:var(--ink)}
+.lever-note{max-width:none}
+#leverWarnings .hint{margin-top:var(--s2)}
+
+/* A packing that has crashed a run is not a refusal and not a projection: it is a
+   third thing, and it needs to read as a warning rather than as a value. */
+.hazard{font:600 var(--t-xs)/1.5 var(--mono);color:var(--warn);text-transform:uppercase;
+        letter-spacing:.06em;border:1px solid currentColor;border-radius:var(--r1);
+        padding:1px 6px}
+tr.hazard-row td{background:color-mix(in srgb,var(--warn) 7%,transparent)}

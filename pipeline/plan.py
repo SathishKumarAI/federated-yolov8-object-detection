@@ -249,8 +249,8 @@ def project(cfg: Config, imgsz: int | None = None) -> dict:
     b = budget(cfg)
     refusals = _out_of_range(cfg, imgsz)
     floor = measurements.value("noise_floor_map50")
-    speedups = measurements.value("gpu_fraction_speedup")
-    speedup = speedups.get(f"{cfg.gpu_fraction:g}")
+    packing = measurements.packing(cfg.gpu_fraction)
+    speedup = packing.get("speedup")
 
     projections: list[dict] = []
 
@@ -298,11 +298,18 @@ def project(cfg: Config, imgsz: int | None = None) -> dict:
             f"{vram['clients_on_the_card']} client(s) on the card; {vram['how']}",
             vram["rests_on"])
 
+    rec = measurements.BY_ID["noise_floor_map50"]
     add("smallest difference this run could resolve", floor, "mAP50",
-        "the recorded run-to-run spread. A result smaller than this is not a result, "
-        "whatever the curve looks like -- and this figure is itself a lower bound, "
-        "inferred rather than measured from repeated seeds",
+        f"the recorded run-to-run spread, measured at {rec['conditions']} and a "
+        f"{rec['bound']} bound. A delta smaller than this is not a measured difference, "
+        f"whatever the curve looks like. It is also already stale: {rec['reopened_by']}",
         ["noise_floor_map50"])
+
+    hazard = packing.get("hazard")
+    if hazard:
+        projections.append({"name": "packing hazard", "value": f"{cfg.gpu_fraction:g}",
+                            "unit": "gpu fraction", "how": hazard,
+                            "rests_on": ["gpu_fraction_speedup"], "status": "hazard"})
 
     return {
         "config": cfg.to_dict(),
@@ -314,11 +321,22 @@ def project(cfg: Config, imgsz: int | None = None) -> dict:
         "warnings": warnings(cfg),
         "reference": REFERENCE_RUN,
         "differs_from_reference": _difference_from_reference(cfg, imgsz),
-        "imgsz_reachable": imgsz == 640,
-        "imgsz_note": "The federation trains at my-project's DEFAULT_IMAGE_SIZE of 640. "
-                      "Changing it means editing my-project/my_project/client_app.py, "
-                      "which pipeline/ is not allowed to do -- so any other value here "
-                      "is a what-if, not a setting this dashboard can apply.",
+        # Derived, not hard-coded: resolution became a real run lever on 2026-09-26, and
+        # whether THIS server can apply it is a fact about the Config it is holding.
+        "imgsz_reachable": "imgsz" in Config.__dataclass_fields__ or imgsz == 640,
+        "imgsz_note": ("Resolution is a run lever: one number drives the federation, the "
+                       "clients' own validation, the centralised baseline and the "
+                       "holdout together, so it cannot become an unfair comparison. The "
+                       "cost of anything but 320 or 640 is still unmeasured here."
+                       if "imgsz" in Config.__dataclass_fields__ else
+                       "This server has no imgsz lever: the federation trains at "
+                       "my-project's DEFAULT_IMAGE_SIZE of 640, and changing it means "
+                       "editing my-project/my_project/client_app.py, which pipeline/ is "
+                       "not allowed to do. Any other value here is a what-if."),
+        "levers": {name: name in Config.__dataclass_fields__
+                   for name in ("freeze_round1", "server_ema", "fix_bn_from_round",
+                                "imgsz", "local_bn")},
+        "lever_notes": measurements.LEVER_NOTES,
         "accuracy_note": "No mAP is projected. One configuration's end-to-end result is "
                          "recorded, and predicting another's from it would be a "
                          "fabricated number with a measured number's confidence. What "

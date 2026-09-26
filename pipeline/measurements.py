@@ -46,6 +46,37 @@ WARM_STARTED_CLASSES = ["person", "car", "bus", "truck", "train", "motorcycle",
 UNWARMED_CLASSES = [c for c in BDD_CLASSES if c not in WARM_STARTED_CLASSES]
 
 
+#: What each run lever does, and the way each one is easy to misread. Held here because
+#: both the run form and the projection panel quote them, and a caveat that exists in two
+#: places is a caveat that will only be updated in one.
+LEVER_NOTES = {
+    "freeze_round1": "Freeze the first N layers on round 1 only, so the part-random head "
+                     "settles against a fixed backbone. 10 is the YOLOv8s backbone. "
+                     "Linear-probe-then-fine-tune; three independent papers arrive at "
+                     "freeze-then-unfreeze. Round 1 currently COSTS the warm-started "
+                     "model 0.066 mAP50, which is what this is aimed at.",
+    "server_ema": "A bias-corrected EMA of the aggregate across rounds, with the clients "
+                  "continuing from the smoothed model. Ultralytics rebuilds its own EMA "
+                  "every round with updates=0, so at 88 updates the decay is 0.043 and "
+                  "the fleet ships an essentially unsmoothed endpoint; the centralised "
+                  "ceiling reaches 0.795. This closes that asymmetry server-side.",
+    "fix_bn_from_round": "FixBN: from round R on, clients normalise with the aggregate's "
+                         "BatchNorm statistics and stop updating them. **R = 1 pins "
+                         "COCO's initial statistics and is NOT the method** -- the "
+                         "warm-up is the method, so pick about half the run length. "
+                         "Unlike FedBN it leaves a single global model, so the holdout "
+                         "stays meaningful.",
+    "imgsz": "Input resolution, applied to the federation, the clients' validation, the "
+             "centralised baseline AND the holdout as one number so it cannot become an "
+             "unfair comparison. Published BDD100K numbers go 0.470 at 640 to 0.625 at "
+             "1024; traffic lights and signs are sub-20 px after the downscale. It "
+             "changes no data, and its cost here is unmeasured above 640.",
+    "local_bn": "FedBN: each vehicle keeps its own BatchNorm. Helps under domain shift "
+                "and much less under label skew. **It leaves no single global model** -- "
+                "scoring a checkpoint on the holdout then measures a model that never "
+                "existed on any vehicle.",
+}
+
 def _m(mid, label, value, unit, source, quote, note, measured_on, **extra) -> dict:
     return {"id": mid, "label": label, "value": value, "unit": unit,
             "source": source, "quote": quote, "note": note,
@@ -81,13 +112,20 @@ RECORDS: list[dict] = [
        "0.4173 of 0.4936. Published work reaches 61.5 vs 61.4 on BDD100K, so this gap "
        "is this project's schedule and transport, not a law of federated detection.",
        "2026-08-06"),
-    _m("noise_floor_map50", "run-to-run spread in holdout mAP50", 0.016, "mAP50",
-       "CLAUDE.md", "0.016",
-       "A delta smaller than this is not a result. Recorded as a LOWER bound: it was "
-       "inferred from a ceiling anomaly across two data volumes, not from repeated "
-       "seeds, so the true spread may be smaller and this band may be dismissing real "
-       "differences. Re-measure before ranking anything close.",
-       "2026-08-16", bound="lower", confidence="inferred"),
+    _m("noise_floor_map50", "run-to-run spread in holdout mAP50", 0.0018, "mAP50",
+       "docs/NOISE_FLOOR.md", "0.0018",
+       "A delta smaller than this is not a measured difference. Measured at 2 rounds x 1 "
+       "local epoch on an IID fleet, n=3, max-min 0.0036, stdev 0.0019, same holdout in "
+       "every arm -- and a LOWER bound, because n=3 under-reports a spread. It replaces "
+       "an inferred +/-0.016 that was 8.9x too loose and was dismissing real "
+       "differences, FedBN's +0.0040 among them.",
+       "2026-09-26", bound="lower", confidence="measured",
+       conditions="2 rounds x 1 local epoch, IID fleet, n=3, same holdout in every arm",
+       superseded="+/-0.016, inferred from a centralised ceiling anomaly across two data "
+                  "volumes -- a statement about data volume, never a seed spread",
+       reopened_by="the transport fix and the imgsz lever, both 2026-09-26: variance "
+                   "measured under the old transport is variance of a different system, "
+                   "so this must be re-measured at 6x4 on a non-IID fleet"),
     _m("warm_start_untrained", "holdout mAP50 of the untrained warm-started model",
        0.2582, "mAP50",
        "docs/PHASED_PLAN.md", "0.2582",
@@ -113,9 +151,20 @@ RECORDS: list[dict] = [
        {"1.0": 1.00, "0.5": 1.50, "0.33": 1.94}, "x",
        "CLAUDE.md", "1.94",
        "0.33 is fastest and fills 94.9-96.6 % of VRAM with three Ray actors; one run "
-       "at that setting died mid-round-2 on a HOST allocation, not the card. 0.5 if "
-       "anything else wants memory.",
-       "2026-08-16"),
+       "at that setting died mid-round-2 on a HOST allocation, not the card. 0.5 was the "
+       "recommendation until 2026-09-26, when it crashed the whole pipeline process with "
+       "a Windows access violation inside Ray -- so 1.0 (serialised) is now the only "
+       "packing that has completed on this machine.",
+       "2026-08-16",
+       # Packing is a speed lever that is also the only setting here that has ever
+       # killed a run, twice, two different ways. The speed-up numbers are real; the
+       # hazard is what the panel has to say beside them.
+       hazards={"0.33": "no VRAM headroom at all: 94.9-96.6 % full with three actors, "
+                        "and the allocation that failed was on the host, not the card",
+                "0.5": "crashed the pipeline process on 2026-09-26 with 'Windows fatal "
+                       "exception: access violation' inside Ray; no longer known-safe",
+                "1.0": "serialised, and the only packing that has completed a run since "
+                       "2026-09-26"}),
     _m("dataloader_ms_per_sample", "dataloader cost on the training thread", 7.93, "ms",
        "CLAUDE.md", "7.93",
        "5.56 ms with mosaic=0. ~127 ms per batch of 16 at workers=0, the same order as "
@@ -151,10 +200,27 @@ def value(mid: str):
     return BY_ID[mid]["value"]
 
 
+def packing(fraction: float) -> dict:
+    """The speed-up and the hazard for one `gpu_fraction`, or empty when unmeasured.
+
+    Keyed by float rather than by the caller's formatting. `f"{1.0:g}"` is `"1"` and the
+    record's key is `"1.0"`, so a string lookup silently found nothing for the one
+    setting that is actually used -- the wall-clock divisor and the hazard note both
+    vanished at gpu_fraction 1.0 and the projection still looked complete.
+    """
+    rec = BY_ID["gpu_fraction_speedup"]
+    for key, speed in rec["value"].items():
+        if abs(float(key) - float(fraction)) < 1e-9:
+            return {"fraction": float(key), "speedup": speed,
+                    "hazard": rec["hazards"].get(key)}
+    return {}
+
+
 def table() -> dict:
     """What `/api/measurements` serves: the records plus the class facts."""
     return {
         "records": RECORDS,
+        "lever_notes": LEVER_NOTES,
         "classes": {
             "all": BDD_CLASSES,
             "warm_started": WARM_STARTED_CLASSES,
@@ -165,6 +231,46 @@ def table() -> dict:
                     "what tests.",
         },
     }
+
+
+def observed_spread(rows: list[dict]) -> dict | None:
+    """The real spread across runs that differ ONLY in seed, from this machine's ledger.
+
+    A recorded floor is somebody else's measurement of a system that has since changed.
+    When the ledger actually holds repeats, their own max-min is better evidence, and
+    when the two disagree the recorded one is the stale half.
+
+    Returns None rather than a number when there are no repeats: two runs that differ in
+    anything but the seed are two experiments, and calling their difference "spread"
+    would manufacture exactly the false confidence this module exists to prevent.
+    """
+    groups: dict[tuple, list[dict]] = {}
+    for r in rows:
+        cfg = r.get("config") or {}
+        best = (r.get("result") or {}).get("holdout_mAP50")
+        if best is None:
+            continue
+        key = tuple(sorted((k, v) for k, v in cfg.items() if k != "seed"))
+        groups.setdefault(key, []).append({"run": r.get("run"), "seed": cfg.get("seed"),
+                                           "mAP50": best})
+
+    best_group = None
+    for key, members in groups.items():
+        seeds = {m["seed"] for m in members}
+        if len(members) < 2 or len(seeds) < 2:
+            continue
+        if best_group is None or len(members) > len(best_group[1]):
+            best_group = (key, members)
+    if best_group is None:
+        return None
+
+    _, members = best_group
+    values = [m["mAP50"] for m in members]
+    return {"n": len(members),
+            "spread": round(max(values) - min(values), 6),
+            "half_spread": round((max(values) - min(values)) / 2, 6),
+            "runs": sorted(members, key=lambda m: (m["seed"] is None, m["seed"])),
+            "note": "measured on this machine, from runs identical except for the seed"}
 
 
 def drift() -> list[str]:

@@ -2887,3 +2887,162 @@ def test_the_demo_route_serves_the_recording(monkeypatch):
     finally:
         httpd.shutdown()
         httpd.server_close()
+
+
+# ------------------------------------------- run levers, the noise floor, and the era
+def test_the_form_only_offers_levers_the_running_server_can_apply(monkeypatch):
+    """A body field this server has never heard of is dropped in silence.
+
+    So `options.levers` is derived from `Config.__dataclass_fields__` rather than listed:
+    a lever whose plumbing has not landed yet is advertised as absent, and the form
+    disables it instead of posting into a void and reporting a started run.
+    """
+    from pipeline import server as srv
+
+    levers = srv.STATE.snapshot(Config())["options"]["levers"]
+    assert set(levers) == set(srv.LEVERS)
+    for name, ok in levers.items():
+        assert ok == (name in Config.__dataclass_fields__), name
+    # local_bn has existed for a while; this is the guard that the derivation is real
+    # rather than a dict of True.
+    assert levers["local_bn"] is True
+    assert len(set(levers.values())) >= 1
+
+
+def test_every_lever_the_server_advertises_has_a_written_caveat():
+    """The form and the projection panel both quote these. A lever offered with no note
+    is a control whose failure mode is undocumented at the point of use."""
+    from pipeline import server as srv
+
+    for name in srv.LEVERS:
+        note = _meas.LEVER_NOTES.get(name)
+        assert note and len(note) > 80, f"{name} has no usable caveat"
+    # The two that are wrong in a way the value alone cannot show must say so.
+    assert "NOT the method" in _meas.LEVER_NOTES["fix_bn_from_round"]
+    assert "no single global model" in _meas.LEVER_NOTES["local_bn"]
+
+
+def test_the_noise_floor_is_the_measured_one_with_its_conditions():
+    """+/-0.016 was inferred from a centralised ceiling anomaly across two data volumes
+    and was 8.9x too loose -- it had been dismissing real differences, FedBN's +0.0040
+    among them. The band must carry the conditions it was measured under, because a floor
+    measured at 2x1 on an IID fleet is not a floor for a 6x4 non-IID run."""
+    rec = _meas.BY_ID["noise_floor_map50"]
+    assert rec["value"] == 0.0018
+    assert rec["confidence"] == "measured" and rec["bound"] == "lower"
+    assert "IID" in rec["conditions"] and "n=3" in rec["conditions"]
+    assert "0.016" in rec["superseded"]
+    assert rec["reopened_by"], "a floor that cannot go stale is a floor nobody re-measures"
+    assert rec["source"] == "docs/NOISE_FLOOR.md"
+    doc = (REPO / "docs" / "NOISE_FLOOR.md").read_text(encoding="utf-8")
+    assert "0.0018" in doc and "0.016" in doc and "n = 3" in doc
+
+
+def test_an_observed_spread_needs_runs_that_differ_only_in_the_seed():
+    """Calling the difference between two different experiments a "spread" would
+    manufacture exactly the false confidence this module exists to prevent."""
+    same_except_seed = [
+        {"run": "a", "config": {"rounds": 2, "seed": 0}, "result": {"holdout_mAP50": 0.2000}},
+        {"run": "b", "config": {"rounds": 2, "seed": 1}, "result": {"holdout_mAP50": 0.2036}},
+        {"run": "c", "config": {"rounds": 2, "seed": 2}, "result": {"holdout_mAP50": 0.2018}},
+    ]
+    got = _meas.observed_spread(same_except_seed)
+    assert got["n"] == 3
+    assert got["spread"] == 0.0036
+    assert got["half_spread"] == 0.0018
+
+    # Two different experiments are not repeats.
+    assert _meas.observed_spread([
+        {"run": "a", "config": {"rounds": 2, "seed": 0}, "result": {"holdout_mAP50": 0.20}},
+        {"run": "b", "config": {"rounds": 6, "seed": 0}, "result": {"holdout_mAP50": 0.42}},
+    ]) is None
+    # Nor is one run, nor two runs at the same seed, nor a run with no holdout score.
+    assert _meas.observed_spread([same_except_seed[0]]) is None
+    assert _meas.observed_spread([
+        {"run": "a", "config": {"seed": 0}, "result": {"holdout_mAP50": 0.2}},
+        {"run": "b", "config": {"seed": 0}, "result": {"holdout_mAP50": 0.3}}]) is None
+    assert _meas.observed_spread([
+        {"run": "a", "config": {"seed": 0}, "result": {}},
+        {"run": "b", "config": {"seed": 1}, "result": {}}]) is None
+    assert _meas.observed_spread([]) is None
+
+
+def test_a_run_from_before_the_transport_fix_is_labelled_as_such():
+    """Until 2026-09-26 every client returned the fp16 EMA of its own best.pt and FedAvg
+    averaged that. Runs either side of the fix measure two different systems, and there is
+    no timestamp to sort on -- `generated` says when the report was written. The lever
+    fields cannot appear in a config a pre-fix runner produced, so they are the
+    discriminator."""
+    from pipeline import ledger as _ledger
+
+    old = _ledger.era({"strategy": "fedavg", "rounds": 6})
+    assert old["transport"] == "ema-fp16-best"
+    assert "best.pt" in old["note"] and old["comparable_with_older"] is False
+
+    new = _ledger.era({"strategy": "fedavg", "rounds": 6, "server_ema": 0.9})
+    assert new["transport"] == "trained-fp32"
+    assert "server_ema" in new["evidence"]
+
+    # Every lever on its own is enough evidence, and local_bn is deliberately in the set
+    # even though the field pre-dates the fix: a config that RECORDS it comes from the
+    # runner that also records the others.
+    for lever in _ledger.LEVER_KEYS:
+        assert _ledger.era({lever: 0})["transport"] == "trained-fp32", lever
+
+
+def test_the_ledger_row_carries_the_era_and_the_levers(tmp_path, monkeypatch):
+    from pipeline import ledger as _ledger
+
+    report = {"config": {"strategy": "fedavg", "partition": "random", "n_vehicles": 2,
+                         "rounds": 2, "local_epochs": 1, "per_vehicle": 300, "seed": 0,
+                         "profile": "demo", "imgsz": 1024, "server_ema": 0.9},
+              "holdout": {"rounds": [{"mAP50": 0.21, "mAP50-95": 0.1}]}}
+    row = _ledger.row(report, "2026-09-26-1200")
+    assert row["era"]["transport"] == "trained-fp32"
+    assert row["levers"] == {"imgsz": 1024, "server_ema": 0.9}
+
+    plain = _ledger.row({"config": {"strategy": "fedavg"}}, "2026-08-06-1200")
+    assert plain["era"]["transport"] == "ema-fp16-best"
+    assert plain["levers"] == {}
+
+
+def test_a_packing_that_has_crashed_a_run_is_reported_as_a_hazard():
+    """0.5 was the recommendation until it crashed the pipeline process with a Windows
+    access violation inside Ray. A speed-up number with no hazard beside it is an
+    invitation."""
+    hazards = _meas.BY_ID["gpu_fraction_speedup"]["hazards"]
+    assert set(hazards) == {"0.33", "0.5", "1.0"}
+    assert "access violation" in hazards["0.5"]
+    assert "headroom" in hazards["0.33"]
+
+    pr = _projection(profile="full", per_vehicle_override=1400, gpu_fraction=0.5)
+    row = next(r for r in pr["projections"] if r["name"] == "packing hazard")
+    assert row["status"] == "hazard"
+    assert "access violation" in row["how"]
+    # 1.0 is the packing that has completed a run, so it is not a hazard row of alarm --
+    # but it still says what it is, because "serialised" is a cost.
+    safe = _projection(profile="full", per_vehicle_override=1400, gpu_fraction=1.0)
+    row = next(r for r in safe["projections"] if r["name"] == "packing hazard")
+    assert "completed a run" in row["how"]
+
+
+def test_the_projection_names_the_conditions_the_noise_floor_was_measured_under():
+    pr = _projection(profile="full", per_vehicle_override=1400)
+    row = next(r for r in pr["projections"]
+               if r["name"] == "smallest difference this run could resolve")
+    assert row["value"] == 0.0018
+    assert "IID" in row["how"] and "lower bound" in row["how"]
+    assert "transport" in row["how"], "a stale floor must say what made it stale"
+
+
+def test_the_projection_says_whether_this_server_can_pull_each_lever():
+    pr = _projection(profile="full", per_vehicle_override=1400)
+    assert set(pr["levers"]) == {"freeze_round1", "server_ema", "fix_bn_from_round",
+                                 "imgsz", "local_bn"}
+    assert pr["levers"]["local_bn"] is True
+    assert set(pr["lever_notes"]) == set(pr["levers"])
+
+
+def test_the_run_form_posts_only_the_levers_the_server_implements(tmp_path):
+    """Executed under node, because the rule is about what leaves the browser."""
+    _run_js_check(tmp_path, "run_levers.mjs")

@@ -8,7 +8,8 @@ import { state } from "./state.js";
 import { renderStages, renderOptions } from "./control.js";
 import { renderFleet } from "./fleet.js";
 import { renderNowTraining } from "./consumed.js";
-import { renderPerClass, renderChecksumLedger, measured, record } from "./insight.js";
+import { renderPerClass, renderChecksumLedger, measured, record,
+         observedSpread } from "./insight.js";
 
 //: The trainer's own pictures cost an /api/train-artifacts round trip and a directory
 //: listing, so they are not re-read at the rate state now arrives. A vehicle change
@@ -121,7 +122,11 @@ function renderLive(L, cfg) {
  */
 function renderHoldout(holdout, baseline) {
   const rows = (holdout && holdout.rounds) || [];
-  const floor = measured("noise_floor_map50");
+  // An observed spread from this machine's own seed repeats beats a recorded one: the
+  // recorded figure was measured at 2x1 on an IID fleet under the old weight transport,
+  // and both of those have since changed.
+  const obs = observedSpread();
+  const floor = obs ? obs.half_spread : measured("noise_floor_map50");
   const anchor = rows.length ? rows[0].mAP50 : null;
   lineChart("holdoutChart", {
     series: [{ label: "holdout mAP50", color: "var(--ok)", values: rows.map(r => r.mAP50), area: true },
@@ -129,7 +134,8 @@ function renderHoldout(holdout, baseline) {
     aria: "Global model mAP50 on the shared holdout by round", yFmt: v => v.toFixed(3),
     band: (floor != null && anchor != null && rows.length > 1)
       ? { lo: anchor - floor, hi: anchor + floor,
-          label: `±${floor} noise floor around round ${rows[0].round}` }
+          label: `±${floor} ${obs ? "observed" : "recorded"} spread, around round ` +
+                 `${rows[0].round}` }
       : null,
   });
   const best = rows.length ? Math.max(...rows.map(r => r.mAP50)) : null;
@@ -182,12 +188,19 @@ function renderHoldoutProvenance(holdout, baseline, rows, floor) {
   $("holdoutProvenance").innerHTML =
     `<span class="prov">${bits.map(esc).join(" · ")}</span>` +
     (floor == null ? ""
-      : `<br><span class="prov">± is the recorded run-to-run spread of ${floor} mAP50 ` +
-        `from <code>${esc(fr ? fr.source : "?")}</code> (${esc(fr ? fr.measured_on : "?")}), ` +
-        `a <b>${esc(fr ? fr.bound || "point" : "?")}</b> bound and ` +
-        `<b>${esc(fr ? fr.confidence || "measured" : "?")}</b>. ` +
-        `A delta inside the band is not a result; what would change that is a repeated-seed ` +
-        `measurement on this fleet, not a bigger run.</span>`);
+      : obs
+        ? `<br><span class="prov">± is <b>observed on this machine</b>: ${obs.n} runs ` +
+          `identical except for the seed, spread ${obs.spread} mAP50 (` +
+          obs.runs.map(r => `seed ${esc(String(r.seed))} → ${r.mAP50.toFixed(4)}`).join(", ") +
+          `). That beats the recorded figure, which was measured on a system this repo ` +
+          `has since changed.</span>`
+        : `<br><span class="prov">± is the recorded run-to-run spread of ${floor} mAP50 ` +
+          `from <code>${esc(fr ? fr.source : "?")}</code> (${esc(fr ? fr.measured_on : "?")}), ` +
+          `a <b>${esc(fr ? fr.bound || "point" : "?")}</b> bound, ` +
+          `<b>${esc(fr ? fr.confidence || "measured" : "?")}</b> at ` +
+          `${esc(fr && fr.conditions ? fr.conditions : "conditions not recorded")}. ` +
+          `It is stale: ${esc(fr && fr.reopened_by ? fr.reopened_by : "")} ` +
+          `No seed repeats are on this machine yet, so nothing better is available.</span>`);
 }
 
 /** The signature panel: the one number whose stillness invalidates every other one. */

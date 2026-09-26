@@ -19,6 +19,7 @@ whole flow and visualises a simulated vehicle fleet while it runs.
 | **What does Flower × YOLO actually need, measured?** | [`docs/FEDERATED_DETECTION.md`](docs/FEDERATED_DETECTION.md) |
 | How do I run the model live on other machines? | [`docs/REALTIME_NODES.md`](docs/REALTIME_NODES.md) |
 | What should I build? | [`docs/BACKLOG_100.md`](docs/BACKLOG_100.md) |
+| **What counts as a result, and when does that number go stale?** | [`docs/NOISE_FLOOR.md`](docs/NOISE_FLOOR.md) |
 | How do I run any of it? | [`pipeline/README.md`](pipeline/README.md) |
 | Where did the last session stop? | [`STATUS.md`](STATUS.md) and `docs/prompts/` |
 
@@ -35,6 +36,7 @@ Open the one file that owns the thing. Do not read the package to find it.
 | Checksum ledger, per-class small multiples, round profile, provenance | `pipeline/static/js/insight.js` |
 | The projection form | `pipeline/static/js/simulate.js` |
 | The demo/help walkthrough and its steps | `pipeline/static/js/tour.js` |
+| A run lever's caveat, or which levers the form offers | `pipeline/measurements.py` `LEVER_NOTES`, `pipeline/server.py` `LEVERS` |
 | The fleet grid / vehicle drawer / live polling / run form | `pipeline/static/js/{fleet,drawer,live,control}.js` |
 | Label boxes drawn over a frame, the trainer's own pictures | `pipeline/static/js/consumed.js` |
 | Which of ultralytics' output pictures are served, and their captions | `pipeline/train_artifacts.py` — `KINDS` |

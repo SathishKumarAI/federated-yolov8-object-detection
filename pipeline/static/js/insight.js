@@ -25,13 +25,23 @@ export async function loadMeasurements() {
   try {
     facts = await (await fetch("/api/measurements")).json();
   } catch {
-    facts = { records: [], classes: { all: [], warm_started: [], unwarmed: [] } };
+    facts = { records: [], lever_notes: {},
+              classes: { all: [], warm_started: [], unwarmed: [] } };
   }
   return facts;
 }
 
+/** The spread across this machine's own seed repeats, or null when there are none. */
+export const observedSpread = () => (facts && facts.observed_spread) || null;
+
 export const record = (id) => (facts && facts.records.find(r => r.id === id)) || null;
 export const measured = (id) => { const r = record(id); return r ? r.value : null; };
+
+/** What a run lever does and how it is easy to misread. From pipeline/measurements.py. */
+export const leverNote = (name) =>
+  (facts && facts.lever_notes && facts.lever_notes[name])
+    ? esc(facts.lever_notes[name]).replace(/\*\*(.+?)\*\*/g, "<b>$1</b>")
+    : null;
 
 /** Cite a measurement inline: the value, the file, and the date. */
 export function cite(id) {
