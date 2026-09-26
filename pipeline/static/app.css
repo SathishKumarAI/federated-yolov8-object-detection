@@ -372,3 +372,38 @@ table.ledger td.num,table.ledger th{font-variant-numeric:tabular-nums}
 tr.refused-row td{opacity:.75}
 tr.refused-row td:first-child b{text-decoration:line-through;text-decoration-color:var(--bad)}
 #simAdopt{font-weight:600}
+
+/* --------------------------------------------------------- walkthrough (tour.js)
+   A dialog, not a tooltip trail: keyboard-reachable, dismissible, and impossible to
+   lose behind the page. The scrim is deliberately light -- the point of the step is
+   the panel behind it, so the page has to stay readable. */
+.helpbtn{padding:5px 12px;font-size:var(--t-sm)}
+#tour{position:fixed;inset:auto 0 0 0;z-index:50;display:flex;justify-content:center;
+      padding:0 var(--s4) var(--s4);pointer-events:none}
+.tourcard{pointer-events:auto;width:min(680px,100%);background:var(--panel);
+          border:1px solid var(--accent-dim);border-radius:var(--r3);box-shadow:var(--shadow);
+          padding:var(--s4)}
+.tourcard header{display:flex;align-items:center;gap:var(--s3);padding:0;border:0;
+                 background:none;position:static}
+.tourcard header h2{margin:0;font:650 var(--t-lg)/1.3 var(--sans);letter-spacing:-.015em}
+.tourcard header .n{margin-left:auto;font:500 var(--t-xs)/1 var(--mono);color:var(--dim)}
+.tourcard #tourBody{margin:var(--s3) 0}
+.tourcard #tourBody p{margin:0 0 var(--s3);font-size:var(--t-md);color:var(--ink-2)}
+.tourcard .mistake{border-left:2px solid var(--warn);padding-left:var(--s3)}
+.tourcard .mistake .lbl{display:block;font:600 var(--t-xs)/1.6 var(--mono);color:var(--warn);
+                        text-transform:uppercase;letter-spacing:.08em}
+.tourcard footer{display:flex;align-items:center;gap:var(--s2)}
+.tourcard .hint{margin-top:var(--s3)}
+kbd{font:600 var(--t-xs)/1.4 var(--mono);border:1px solid var(--line);border-bottom-width:2px;
+    border-radius:var(--r1);padding:1px 5px;background:var(--sunk)}
+
+/* The step's panel. A ring AND a brightened border, because the highlight must survive
+   a reader who cannot distinguish the accent from the default line colour. */
+[data-tour-lit]{outline:2px solid var(--accent);outline-offset:3px;border-color:var(--accent)}
+body[data-tour="1"] main{padding-bottom:280px}
+
+.demobanner{margin:var(--s3) var(--s5) 0;padding:10px 14px;border-radius:var(--r2);
+            border:1px solid var(--warn);color:var(--warn);font-size:var(--t-md)}
+.demobanner p{margin:0}
+.demobanner b{color:var(--warn)}
+.demobanner em{font-style:normal;font-family:var(--mono);font-size:var(--t-sm)}

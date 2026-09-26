@@ -23,8 +23,8 @@ from pathlib import Path
 
 from urllib.parse import parse_qs, unquote
 
-from . import (baseline, dataset_stats, docs_index, gpu, holdout, ledger, logparse,
-               measurements, nodes, paths, plan, profile as profiler, stages,
+from . import (baseline, dataset_stats, demo_run, docs_index, gpu, holdout, ledger,
+               logparse, measurements, nodes, paths, plan, profile as profiler, stages,
                statestream, train_artifacts, vehicle_metrics, vehicles, verify)
 from .runner import Run
 from .stages import Config
@@ -286,6 +286,10 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(docs_index.index())
         if self.path.split("?")[0] == "/api/plan":
             return self._json(plan.plan(CONFIG))
+        if self.path.split("?")[0] == "/api/demo":
+            # A recorded run in the shape /api/state returns, so the real panels render
+            # it and the walkthrough needs no views of its own.
+            return self._json(demo_run.payload())
         if self.path.split("?")[0] == "/api/simulate":
             # Read-only and side-effect free: it starts nothing, writes nothing, and
             # touches no global. A GET on purpose, so it adds nothing to the mutating

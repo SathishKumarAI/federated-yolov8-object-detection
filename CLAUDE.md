@@ -33,12 +33,16 @@ Open the one file that owns the thing. Do not read the package to find it.
 | Chart axes, ticks, tooltips, sparkline, the noise band | `pipeline/static/js/chart.js` |
 | How state reaches the browser, and the polling fallback | `pipeline/static/js/stream.js` |
 | Checksum ledger, per-class small multiples, round profile, provenance | `pipeline/static/js/insight.js` |
+| The projection form | `pipeline/static/js/simulate.js` |
+| The demo/help walkthrough and its steps | `pipeline/static/js/tour.js` |
 | The fleet grid / vehicle drawer / live polling / run form | `pipeline/static/js/{fleet,drawer,live,control}.js` |
 | Label boxes drawn over a frame, the trainer's own pictures | `pipeline/static/js/consumed.js` |
 | Which of ultralytics' output pictures are served, and their captions | `pipeline/train_artifacts.py` — `KINDS` |
 | An HTTP route or what `/api/state` returns | `pipeline/server.py` |
 | The state push: the diff format, the sequence, the SSE frames | `pipeline/statestream.py` |
 | **A measured number the UI quotes, or its provenance** | `pipeline/measurements.py` — nowhere else |
+| What the demo/help walkthrough replays, and what it admits it lacks | `pipeline/demo_run.py` |
+| What a configuration would cost, and what it refuses to project | `pipeline/plan.py` |
 | The live edge fleet: what a node may report, and its bounds | `pipeline/nodes.py` |
 | The edge node itself — camera, inference, heartbeat | `pipeline/edge.py` |
 | The live-nodes panel | `pipeline/static/js/edge.js` |

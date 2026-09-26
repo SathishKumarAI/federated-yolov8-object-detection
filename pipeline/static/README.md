@@ -14,6 +14,7 @@ reload. ES modules, no bundler, no CDN, no network at runtime.
 | The heartbeat, GPU readouts, criteria, reports, log stream | `js/live.js` | |
 | Checksum ledger, per-class small multiples, round profile, provenance | `js/insight.js` | the panels that make a number harder to believe |
 | The Simulate tab: the projection form and its table | `js/simulate.js` | the maths is server-side in `plan.py` |
+| The walkthrough: its steps, its keyboard, the replay | `js/tour.js` | the recording is `pipeline/demo_run.py` |
 | The fleet grid, the comparison and divergence charts | `js/fleet.js` | |
 | The per-vehicle drawer | `js/drawer.js` | |
 | The Data tab: counts, mixes, the shard table | `js/data.js` | |
@@ -63,6 +64,7 @@ reload. ES modules, no bundler, no CDN, no network at runtime.
 | `GET /api/measurements` | every recorded number the page cites, with its source |
 | `GET /api/profile` | seconds per phase for the last run, plus the verdict |
 | `GET /api/simulate?...` | a projection for an arbitrary configuration; read-only |
+| `GET /api/demo` | a recorded run in /api/state's shape, its sources, and its gaps |
 | `GET /api/vehicle/<vid>` | shard composition and sample image names |
 | `GET /api/shard-image/<vid>/<name>` | one image out of that vehicle's shard |
 | `GET /api/shard-labels/<vid>/<name>` | that frame's label rows, normalised, for the overlay |

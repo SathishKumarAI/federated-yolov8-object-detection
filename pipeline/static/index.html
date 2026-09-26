@@ -27,6 +27,7 @@
   <div class="spacer"></div>
   <span class="lamp l-idle" id="runState">idle</span>
   <span class="lamp l-idle" id="transport" tabindex="0">connecting</span>
+  <button id="helpBtn" class="helpbtn">Demo &amp; help</button>
   <a class="ext" id="mlflowLink" href="http://127.0.0.1:5000" target="_blank" rel="noopener">MLflow ↗</a>
   <a class="ext" id="rayLink" href="http://127.0.0.1:8265" target="_blank" rel="noopener">Ray ↗</a>
 </header>
@@ -37,6 +38,10 @@
   The HTML is read from disk on every request, but the running process still has the old
   Python loaded, so the live panels have no data to show. Restart it:
   <code>python -m pipeline.server</code>
+</div>
+
+<div id="demoBanner" hidden role="status" class="demobanner">
+  <p id="demoBannerText"></p>
 </div>
 
 <main>
@@ -352,6 +357,26 @@
   <div id="planBody" class="grid"></div>
 </section>
 </main>
+
+<!-- The walkthrough. A dialog rather than a tooltip trail: it has to be reachable by
+     keyboard alone, dismissible, and impossible to lose behind the page. -->
+<div id="tour" hidden role="dialog" aria-modal="true" aria-labelledby="tourTitle">
+  <div class="tourcard">
+    <header>
+      <h2 id="tourTitle"></h2>
+      <span class="n" id="tourDots"></span>
+      <button id="tourClose" aria-label="Close the walkthrough">Close</button>
+    </header>
+    <div id="tourBody"></div>
+    <footer>
+      <button id="tourReplay">Replay a recorded run</button>
+      <span class="spacer"></span>
+      <button id="tourPrev">Back</button>
+      <button class="primary" id="tourNext">Next</button>
+    </footer>
+    <p class="hint">← → to step, Esc to leave, <kbd>?</kbd> to reopen.</p>
+  </div>
+</div>
 
 <div id="tip" hidden></div>
 <script type="module" src="/static/js/main.js"></script>

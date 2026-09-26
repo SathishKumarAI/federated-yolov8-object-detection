@@ -38,6 +38,7 @@ export const transport = {
 
 let snap = null;
 let polling = false;
+let held = false;
 let onState = () => {};
 
 /** Everything the views got last. Read-only as far as they are concerned. */
@@ -47,7 +48,22 @@ function deliver(next, label) {
   snap = next;
   transport.mode = label;
   transport.at = Date.now();
-  onState(snap);
+  // While held, the stream keeps its own copy current but the views are not touched:
+  // the walkthrough is showing a recorded run through the same panels, and a live patch
+  // arriving underneath it would replace the recording mid-sentence.
+  if (!held) onState(snap);
+  renderTransport();
+}
+
+/**
+ * Stop delivering to the views without disconnecting.
+ *
+ * Releasing delivers the newest state immediately, so nothing is missed -- a diff
+ * stream has no backlog to replay, which is exactly why holding it is safe.
+ */
+export function hold(on) {
+  held = !!on;
+  if (!held && snap) onState(snap);
   renderTransport();
 }
 
@@ -56,11 +72,15 @@ export function renderTransport() {
   const el = $("transport");
   if (!el) return;
   const age = transport.at == null ? null : (Date.now() - transport.at) / 1000;
-  const word = { connecting: "connecting", push: "push", polling: "polling" }[transport.mode];
-  el.className = "lamp " + (transport.mode === "push" ? "l-ok"
+  const word = held ? "held"
+    : { connecting: "connecting", push: "push", polling: "polling" }[transport.mode];
+  el.className = "lamp " + (held ? "l-warn" : transport.mode === "push" ? "l-ok"
     : transport.mode === "polling" ? "l-warn" : "l-idle");
-  el.textContent = word + (transport.mode === "push" ? ` · seq ${transport.seq}` : "");
-  const detail = transport.mode === "push"
+  el.textContent = word + (!held && transport.mode === "push" ? ` · seq ${transport.seq}` : "");
+  const detail = held
+    ? "The walkthrough is showing a recorded run through these panels. The live stream "
+      + "is still connected and will take over the moment the replay stops."
+    : transport.mode === "push"
     ? `Server-Sent Events on /api/stream. ${transport.patches} diff(s) applied, ` +
       `${transport.resyncs} resync(s). Last update ${age == null ? "never" : age.toFixed(1) + " s ago"}.`
     : transport.mode === "polling"

@@ -13,6 +13,7 @@ import { loadMetrics } from "./metrics.js";
 import { pollEdge } from "./edge.js";
 import { loadMeasurements, loadProfile, renderProvenance } from "./insight.js";
 import { loadSimulation, wireSimulate } from "./simulate.js";
+import { wireTour, offerTour } from "./tour.js";
 
 const VIEWS = ["control", "live", "data", "metrics", "plan", "simulate", "docs"];
 
@@ -40,12 +41,13 @@ $("profileRefresh").onclick = () => loadProfile();
 
 wireControl(() => showView(document.querySelector('.tab[data-view=live]')));
 wireSimulate();
+wireTour();
 enableChartCursor();
 connectEvents();
 // The measurement table first: every panel that prints a +/- or cites a source reads
 // it, and a panel that rendered before it arrived would quietly print nothing where a
 // provenance line belongs.
-loadMeasurements().then(() => connectState(applyState));
+loadMeasurements().then(() => connectState((s) => { applyState(s); offerTour(); }));
 // Its own loop, not part of poll(): edge nodes are live whether or not a federation
 // is running, and /api/nodes must not be coupled to the run-state snapshot.
 pollEdge();

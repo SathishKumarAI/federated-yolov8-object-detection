@@ -2759,3 +2759,131 @@ def test_the_simulate_route_refuses_a_configuration_the_run_form_would_reject(mo
     finally:
         httpd.shutdown()
         httpd.server_close()
+
+
+# ----------------------------------------------------- the walkthrough, and the recording
+from pipeline import demo_run as _demo  # noqa: E402
+
+
+def test_every_walkthrough_step_points_at_a_panel_that_exists():
+    """A step naming a missing id highlights nothing and says nothing about it.
+
+    The reader sees a paragraph about a panel they cannot find, which is worse than no
+    walkthrough: it teaches them the page is lying. Checked against the markup and
+    against every id the other modules emit.
+    """
+    static = REPO / "pipeline" / "static"
+    declared = set(re.findall(r'id="([\w-]+)"',
+                              (static / "index.html").read_text(encoding="utf-8")))
+    for path in (static / "js").glob("*.js"):
+        declared |= set(re.findall(r'id="([\w-]+)"', path.read_text(encoding="utf-8")))
+
+    tour = (static / "js" / "tour.js").read_text(encoding="utf-8")
+    panels = [m for m in re.findall(r'panel:\s*"([\w-]+)"', tour)]
+    assert len(panels) >= 8, f"only {len(panels)} steps point at a panel"
+    missing = sorted(set(panels) - declared)
+    assert not missing, f"walkthrough steps point at ids nothing produces: {missing}"
+
+    # Every step names the mistake it prevents. A step that only describes the panel is
+    # a caption, and the page already has captions.
+    assert tour.count("mistake:") == tour.count("title:"), \
+        "every walkthrough step must name the mistake its panel prevents"
+
+    # And each tab it jumps to is a real tab.
+    tabs = set(re.findall(r'tab:\s*"(\w+)"', tour))
+    in_html = set(re.findall(r'data-view="(\w+)"',
+                             (static / "index.html").read_text(encoding="utf-8")))
+    assert tabs <= in_html, f"the walkthrough jumps to tabs that do not exist: {tabs - in_html}"
+
+
+def test_the_walkthrough_is_usable_with_a_keyboard_alone(tmp_path):
+    """Executed, not asserted by reading: arrows step, Escape leaves, Tab stays inside.
+
+    A dialog that traps focus and cannot be closed is worse than no dialog, and the
+    walkthrough is the one part of this page aimed at someone who has never seen it.
+    """
+    _run_js_check(tmp_path, "tour_steps.mjs")
+
+
+def test_the_recorded_run_invents_nothing():
+    """Every field in the demo payload is transcribed from a document, or absent.
+
+    A walkthrough with made-up numbers would be the exact failure this dashboard exists
+    to catch, shipped inside the thing that catches it. So the fields that were never
+    recorded are None or empty, and each one has a written reason.
+    """
+    p = _demo.payload()
+    live = p["state"]["live"]
+
+    assert p["state"]["demo"] is True, "the payload must be flagged as a recording"
+    assert live["baseline"] == {}, "no ceiling was trained for this run; do not invent one"
+    assert live["metrics"] == [] and live["map50"] == []
+    assert all(r.get("per_class") is None for r in live["holdout"]["rounds"])
+    assert all("mAP50-95" not in r for r in live["holdout"]["rounds"]), \
+        "only mAP50 was recorded; a second series would be fabricated"
+    assert all(v["fingerprint"] is None for v in p["state"]["fleet"]), \
+        "a fingerprint is a hash of exactly which images a vehicle holds; faking one is " \
+        "a lie in the field whose only job is provenance"
+    for key in ("util_pct", "mem_used_mib", "power_w", "energy_wh", "temp_c"):
+        assert p["state"]["gpu"][key] is None, f"gpu.{key} was not recorded"
+
+    # Every gap has a written reason, and every present field names its document.
+    assert set(p["absent"]) >= {"baseline", "per_class", "mAP50-95", "gpu"}
+    for field, why in p["absent"].items():
+        assert len(why) > 60, f"absent[{field}] does not explain itself"
+    for field, src in p["sources"].items():
+        assert ".md" in src or ".py" in src, f"sources[{field}] names no document"
+
+
+def test_the_recorded_numbers_are_the_ones_the_documents_say():
+    """The transcription itself. If PHASED_PLAN's table is edited, this fails rather than
+    the demo quietly teaching an outdated number."""
+    phased = (REPO / "docs" / "PHASED_PLAN.md").read_text(encoding="utf-8")
+    assert "0.1924" in phased and "0.2073" in phased and "0.2582" in phased
+    got = [r["mAP50"] for r in _demo.HOLDOUT_ROUNDS]
+    assert got == [0.1924, 0.2073], got
+    assert _demo.UNTRAINED_MAP50 == 0.2582
+
+    # The checksums are real captured aggregates, and they differ -- a demo whose
+    # heartbeat was stuck would teach the wrong lesson about the most important panel.
+    assert _demo.CHECKSUMS == [-1032.5395936965942, -2646.913425683975]
+    assert len(set(_demo.CHECKSUMS)) == 2
+    assert all(c in CAPTURED for c in ("-1032.5395936965942", "-2646.913425683975"))
+
+
+def test_the_recorded_fleet_uses_the_real_condition_profiles():
+    """'vehicle 3 is the rain/fog one' has to be true of the demo too, or the walkthrough
+    teaches a mapping the code does not have."""
+    got = [v["condition"] for v in _demo.fleet()]
+    assert got == [name for name, _ in vehicles.PROFILES[:6]]
+    assert all(v["n_train"] == 1400 for v in _demo.fleet())
+
+
+def test_the_recording_is_shaped_like_the_real_state(monkeypatch):
+    """The walkthrough feeds the recording through the real panels rather than having
+    views of its own -- views that would rot the moment a panel changed. That only works
+    while the two shapes agree."""
+    from pipeline import server as srv
+
+    real = srv.STATE.snapshot(Config())
+    fake = _demo.state()
+    missing = sorted(set(real) - set(fake) - {"demo"})
+    assert not missing, f"the recording lacks top-level keys the panels read: {missing}"
+    missing_live = sorted(set(real["live"]) - set(fake["live"]))
+    assert not missing_live, f"the recording's live block lacks: {missing_live}"
+
+
+def test_the_demo_route_serves_the_recording(monkeypatch):
+    import http.client
+
+    _, httpd = _serve(monkeypatch, {"busy": False})
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", httpd.server_address[1], timeout=10)
+        conn.request("GET", "/api/demo", headers={"Connection": "close"})
+        got = json.loads(conn.getresponse().read())
+        assert got["state"]["demo"] is True
+        assert got["run"].startswith("head warm-start probe")
+        conn.close()
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
