@@ -39,6 +39,42 @@ the optimizer touched.** It is:
 
 So `get_weights(self.model)` serialises that, and FedAvg averages it.
 
+### `MEASURED`, and the fp16 signature is bit-exact
+
+One epoch on `batch_1` at `fraction=0.15`, batch 8, the client's own load path:
+
+```
+weights leaving the client  : 355/355 tensors are exactly fp16-representable
+live trained model          :  58/355 tensors are exactly fp16-representable
+weights leaving vs live trained model : 354/355 differ, max abs diff 1.190e+02
+weights leaving vs trainer EMA (fp32) : 297/355 differ, max abs diff 3.841e-03
+ema.updates 14, decay 0.006975, epochs run 1
+```
+
+A tensor that has been through `.half().float()` is bit-identical to its own fp16 cast.
+355 of 355 is that signature; a live fp32 model manages 58 of 355 by coincidence. The
+1.190e+02 maximum is not a weight — it is `num_batches_tracked`, differing by exactly the
+epoch's 119 batches, because `ModelEMA.update` lerps only floating-point tensors. **Every
+BatchNorm counter that travelled was 0**, in the transport whose docstring advertises
+sending them. The float-tensor disagreement is the 3.841e-03 against the live EMA, which
+is fp16 spacing at the magnitude of the head's class biases.
+
+After the fix, on the same probe, through the client's own property:
+
+```
+sent == trainer.model exactly: True
+sent  fp16-representable: 1/298        (old path: 298/298)
+num_batches_tracked  sent=120  old path=1
+```
+
+**One claim in the table below is not measured.** That `best.pt` comes from an *earlier*
+epoch than the last was not observed: a 4-epoch probe had monotone fitness
+(mAP50-95 0.1407 → 0.1493 → 0.1541 → 0.1687), so `best == last` there, and
+`strip_optimizer` erases the epoch field from both checkpoints at the end of training, so
+the file cannot be asked afterwards. It is a live risk of the mechanism at
+`local_epochs > 1`, not a demonstrated loss — written as a risk, and removed by the same
+fix either way.
+
 | | consequence | why it costs mAP | size |
 |---|---|---|---|
 | **a** | **`best.pt`, not the last epoch.** `DetMetrics.fitness` is `[0,0,0,1]·[P,R,mAP50,mAP50-95]` (`utils/metrics.py:1007`) — pure mAP50-95 on the client's own val | at `local_epochs = 4` each vehicle returns a *different* epoch, chosen by a noisy 280-image split. "4 local epochs" is not what happens; FedAvg averages models trained for different lengths. **Invisible at `local_epochs = 1`**, where `best == last` — which is why every 2×1 probe in this repo missed it and the 6×4 headline did not | largest |

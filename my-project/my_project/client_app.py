@@ -113,6 +113,39 @@ class FlowerClient(Client):
         """
         return self.yolo.model if self.yolo is not None else None
 
+    @property
+    def trained_model(self):
+        """The module the optimizer actually stepped -- what FedAvg must average.
+
+        ``model`` above is the right thing to *receive* into and the wrong thing to
+        *send*. Ultralytics' rebind at the end of ``train()`` does not hand back the
+        trained module; it reloads a checkpoint (``engine/model.py:828``), and the
+        checkpoint holds only ``deepcopy(ema).half()`` -- ``"model"`` is written as
+        ``None`` (``engine/trainer.py:725,740``) and the loader prefers ``ckpt["ema"]``
+        (``nn/tasks.py:1899``). Measured on one epoch of batch_1: 355 of 355 tensors
+        reaching ``get_weights`` were exactly fp16-representable against 58 of 355 in
+        the live model, which is the ``.half().float()`` signature, and every BN
+        ``num_batches_tracked`` arrived as 0 because ``ModelEMA.update`` lerps only
+        floating-point tensors.
+
+        So three things rode on that rebind: the fp16 round-trip, an EMA nobody asked
+        for whose ``updates`` counter restarts at 0 every round, and -- at
+        ``local_epochs > 1`` -- ``best.pt``'s own choice of epoch, scored on this
+        vehicle's 280-image val split. Reading the trainer's module removes all three
+        at the send site and changes nothing about what is received.
+
+        Falls back to ``model`` before any ``train()`` has run, and says so: a silent
+        fallback here would look exactly like the fix working.
+        """
+        trainer = getattr(self.yolo, "trainer", None) if self.yolo is not None else None
+        module = getattr(trainer, "model", None)
+        if module is None:
+            logger.warning(
+                "[Client] No trainer module available; sending yolo.model instead. "
+                "After a train() that is the reloaded fp16 EMA of best.pt, not the "
+                "weights this round produced.")
+            return self.model
+        return module
 
     def _validate_batch_id(self, batch_id: int) -> bool:
         """Validate that batch_id is within the acceptable range."""
@@ -320,8 +353,19 @@ class FlowerClient(Client):
                 num_examples = 0
                 metrics = {"error": "No metrics returned from training", "os": OS_NAME}
 
-            # 6) Extract updated weights for sending back to server
-            updated_weights = get_weights(self.model)
+            # 6) Extract updated weights for sending back to server.
+            # From the TRAINER's module, not from yolo.model -- see trained_model.
+            updated_weights = get_weights(self.trained_model)
+
+            # Log both, every round. The two numbers differing is the fix working; them
+            # being equal means the trainer was not reachable and the fp16 EMA went out
+            # instead, which is the bug this replaced and must never be silent again.
+            reloaded_checksum = sum(
+                w.sum() for w in get_weights(self.model) if w.size > 0)
+            trained_checksum = sum(w.sum() for w in updated_weights if w.size > 0)
+            logger.info(
+                f"[Client] trained weights checksum {trained_checksum}; the reloaded "
+                f"best.pt EMA would have sent {reloaded_checksum}")
 
             # FedProx: pull the locally-trained weights back toward the global model
             # by factor mu, i.e. w <- w - mu * (w - w_global). mu == 0 is plain FedAvg.

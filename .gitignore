@@ -227,3 +227,8 @@ kaggle.json
 /logs/task.log
 /logs/get_set.log
 /logs/metrics.log
+
+# Claude Code agent worktrees: a nested git worktree of this repo, created by a
+# background agent. Generated, machine-local, and a checkout of the repo inside
+# itself -- never committed.
+.claude/worktrees/
