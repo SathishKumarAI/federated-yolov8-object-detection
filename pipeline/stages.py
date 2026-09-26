@@ -65,6 +65,7 @@ class Config:
     freeze_round1: int = 0           # layers frozen on round 1, so the head settles
     server_ema: float = 0.0          # >0: EMA the aggregate across rounds (FedSWA-style)
     fix_bn_from_round: int = 0       # >0: FixBN -- pin BatchNorm statistics from that round
+    imgsz_override: int = 0          # 0 = the profile default (320 demo / 640 full)
     ray_address: str | None = None   # set => attach to an existing head node
 
     @property
@@ -83,13 +84,25 @@ class Config:
 
     @property
     def imgsz(self) -> int:
-        """Image size for the *sanity* stage only.
+        """Input resolution, for every stage that has one.
 
-        The federation's size is my-project's DEFAULT_IMAGE_SIZE (640) and is not
-        reachable from here -- changing it would mean editing client_app.py, which
-        this component is not allowed to do. So `demo` speeds things up through
-        fewer images per vehicle, not smaller ones.
+        No longer the sanity stage's alone. The federation's size used to be
+        my-project's ``DEFAULT_IMAGE_SIZE`` and unreachable from here -- the client took
+        it from a module constant, and changing it meant editing ``client_app.py``, which
+        this component may not do. It is now a run-config key the server broadcasts, so
+        one number covers the federation, the clients' own validation, the centralised
+        baseline and the holdout score. ``_cmd_baseline`` and ``_cmd_evaluate`` already
+        passed this value as a flag, so raising it cannot silently produce a federation
+        measured against a ceiling at a different resolution.
+
+        Why it is worth raising: BDD100K frames are 1280x720, and at 640 a traffic light
+        or a rider is sub-20px. Published YOLOv8 results on this dataset are 0.470 mAP50
+        for yolov8n at 640 against 0.625 for yolov8s at 1024 -- and changing it touches no
+        data. Costs activation memory as the square of the size, so the client scales its
+        batch by ``(640/imgsz)**2``.
         """
+        if self.imgsz_override:
+            return self.imgsz_override
         return 320 if self.profile == "demo" else 640
 
     def to_dict(self) -> dict:
@@ -361,7 +374,7 @@ def _cmd_federate(cfg: Config) -> list[str]:
             # parse, and the run would die before the first round.
             f'cache="{cfg.cache}" local_bn={str(cfg.local_bn).lower()} '
             f'freeze_round1={cfg.freeze_round1} server_ema={cfg.server_ema} '
-            f'fix_bn_from_round={cfg.fix_bn_from_round}']
+            f'fix_bn_from_round={cfg.fix_bn_from_round} imgsz={cfg.imgsz}']
 
 
 def _cmd_verify(_: Config) -> list[str]:

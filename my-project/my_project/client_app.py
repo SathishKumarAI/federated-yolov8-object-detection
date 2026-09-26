@@ -234,6 +234,10 @@ class FlowerClient(Client):
         # FixBN: normalise with the aggregate's statistics and stop them moving.
         # The server decides which rounds, because the warm-up phase is the method.
         fix_bn = bool(ins.config.get("fix_bn", False))
+        # Input resolution for this round. BDD frames are 1280x720; at 640 the small
+        # classes are sub-20px. The holdout and the baseline are scored at the same
+        # size by the pipeline, so this does not quietly become an unfair win.
+        imgsz = int(ins.config.get("imgsz", DEFAULT_IMAGE_SIZE))
 
         # `optimizer="auto"` REPLACES lr0 with 0.002*5/(4+nc) and logs that it did, in
         # a line nobody read. Passing lr0 while leaving the optimizer on auto is a
@@ -286,7 +290,7 @@ class FlowerClient(Client):
             # shard an entire round can finish without a single step: training
             # "succeeds", metrics are logged, and the returned weights are bit-for-bit
             # what the server sent. Warn rather than fail — a caller may want this.
-            batch = get_optimal_batch_size()
+            batch = get_optimal_batch_size(imgsz)
             n_train = count_shard_examples(self.batch_id, "train")
             steps = math.ceil(n_train / batch) * int(local_epochs)
             accumulate = max(round(NOMINAL_BATCH_SIZE / batch), 1)
@@ -331,7 +335,7 @@ class FlowerClient(Client):
             results = self.yolo.train(
                 data=data_yaml_path,
                 epochs=local_epochs,
-                imgsz=DEFAULT_IMAGE_SIZE,
+                imgsz=imgsz,
                 device=self.device,
                 batch=batch,
                 verbose=False,
@@ -503,8 +507,11 @@ class FlowerClient(Client):
         try:
             logger.info(f"[Client] Evaluating with data config: {data_yaml_path}")
             results = self.yolo.val(
+                # The same size the round trained at: `on_evaluate_config_fn` is
+                # `fit_config_fn`, so this dict already carries it. Scoring at 640 a
+                # model trained at 1024 would report a number for neither.
                 data=data_yaml_path,
-                imgsz=DEFAULT_IMAGE_SIZE,
+                imgsz=int(ins.config.get("imgsz", DEFAULT_IMAGE_SIZE)),
                 device=self.device,
                 verbose=False
             )

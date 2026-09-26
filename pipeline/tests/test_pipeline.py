@@ -383,6 +383,26 @@ def test_the_round_one_freeze_reaches_the_federation(_flwr_launcher):
     assert "freeze_round1=0" in " ".join(stages._cmd_federate(Config()))
 
 
+def test_one_image_size_reaches_the_federation_the_baseline_and_the_holdout(_flwr_launcher):
+    """A federation at 1024 scored against a ceiling at 640 is not a comparison. The
+    baseline and evaluate stages already took this as a flag; the federation's own size
+    was the piece that was unreachable, and the docstring of Config.imgsz said so."""
+    cfg = Config(imgsz_override=1024)
+    assert "imgsz=1024" in " ".join(stages._cmd_federate(cfg))
+    assert "1024" in " ".join(stages._cmd_baseline(cfg))
+    assert "1024" in " ".join(stages._cmd_evaluate(cfg))
+
+
+def test_the_image_size_default_still_belongs_to_the_profile(_flwr_launcher):
+    """Off means off: demo stays at 320 and full at 640, so adding the lever moves no
+    number that has already been measured. `Config()` is the demo profile, which is
+    what the 320 is -- and what this test asserted 640 for on its first draft."""
+    assert Config().imgsz == 320
+    assert Config(profile="full").imgsz == 640
+    assert Config(profile="demo", imgsz_override=960).imgsz == 960
+    assert Config(profile="full", imgsz_override=1024).imgsz == 1024
+
+
 def test_a_gpu_fraction_ray_cannot_schedule_is_refused_rather_than_hung(capsys):
     """Ray accepts num_gpus > 1 per client and then places no client at all: the
     federation waits for workers that can never be scheduled, with nothing in any log

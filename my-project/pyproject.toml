@@ -102,6 +102,14 @@ server_ema = 0.0
 # the model that was actually trained.
 fix_bn_from_round = 0
 
+# Input resolution for training AND for the clients' own validation. BDD100K frames are
+# 1280x720, so at 640 a traffic light is sub-20px. Published numbers on this dataset:
+# 0.470 mAP50 for yolov8n at 640 against 0.625 for yolov8s at 1024. The pipeline scores
+# the shared holdout and the centralised baseline at whatever this is set to, so raising
+# it does not quietly become an unfair comparison. Costs activation memory as the square:
+# the client scales its batch by (640/imgsz)^2.
+imgsz = 640
+
 # NOTE: `flwr run` rewrites this section in place on first use — it migrates the
 # federations to ~/.flwr/config.toml and comments out everything below, leaving a
 # "CONFIGURATION MIGRATION NOTICE" banner. That is a local artifact: do NOT commit

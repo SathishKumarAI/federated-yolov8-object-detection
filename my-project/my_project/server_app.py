@@ -38,7 +38,8 @@ DEFAULT_NUM_ROUNDS = 3
 def round_config(server_round: int, num_rounds: int, local_epochs: int, *,
                  plots_every_round: bool = False, optimizer: str = "auto",
                  lr0: float = 0.0, mosaic: float = -1.0,
-                 freeze_round1: int = 0, fix_bn_from_round: int = 0) -> Dict[str, Scalar]:
+                 freeze_round1: int = 0, fix_bn_from_round: int = 0,
+                 imgsz: int = 640) -> Dict[str, Scalar]:
     """What every client is told about THIS round.
 
     Shared across clients on purpose, and safe to share -- unlike ``batch_id``, which
@@ -106,6 +107,11 @@ def round_config(server_round: int, num_rounds: int, local_epochs: int, *,
         # A warm-up is the method, not an implementation detail -- the statistics have
         # to be worth pinning before they are pinned, and 1 pins the COCO initial ones.
         "fix_bn": bool(fix_bn_from_round) and server_round >= int(fix_bn_from_round),
+        # The federation's input resolution. Sent rather than hardcoded so the
+        # holdout and the centralised baseline -- which already take it as a flag --
+        # can be scored at the same size. A federation at 1024 measured against a
+        # ceiling at 640 is not a comparison.
+        "imgsz": int(imgsz),
     }
 
 
@@ -673,6 +679,11 @@ def server_fn(context: Context):
     # on. 0 = off. Unlike FedBN it leaves ONE global model, so the holdout still
     # measures the model that was trained.
     fix_bn_from_round = int(run_config.get("fix_bn_from_round", 0))
+    # BDD100K frames are 1280x720 and this trains at 640 by default, where a traffic
+    # light is sub-20px. Published YOLOv8 numbers on this dataset: 0.470 mAP50 for
+    # yolov8n at 640 against 0.625 for yolov8s at 1024. The pipeline scores the
+    # holdout and the baseline at whatever this is, so the comparison stays fair.
+    imgsz = int(run_config.get("imgsz", 640))
     # FedBN is a client-side filter -- the server still receives and averages every
     # tensor, clients simply decline the BatchNorm ones. Recorded here so the run log
     # says which federation this was, and so the caveat below is on the record.
@@ -683,7 +694,7 @@ def server_fn(context: Context):
         f"min_clients={min_clients}, strategy={strategy_name}, "
         f"proximal_mu={proximal_mu}, local_bn={local_bn}, "
         f"freeze_round1={freeze_round1}, server_ema={server_ema}, "
-        f"fix_bn_from_round={fix_bn_from_round}"
+        f"fix_bn_from_round={fix_bn_from_round}, imgsz={imgsz}"
     )
     if local_bn:
         logger.warning(
@@ -735,7 +746,7 @@ def server_fn(context: Context):
                             plots_every_round=plots_every_round,
                             optimizer=optimizer_name, lr0=lr0, mosaic=mosaic,
                             freeze_round1=freeze_round1,
-                            fix_bn_from_round=fix_bn_from_round)
+                            fix_bn_from_round=fix_bn_from_round, imgsz=imgsz)
 
     # Build the strategy through the registry: the mixin carries this project's
     # behaviour, the named Flower strategy carries the aggregation.

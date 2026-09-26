@@ -322,6 +322,15 @@ def build_parser() -> argparse.ArgumentParser:
                          "COCO's initial statistics, which is not it. Unlike --local-bn "
                          "this leaves ONE global model, so the holdout keeps measuring "
                          "the model that was trained")
+    ap.add_argument("--imgsz", type=int, default=0, metavar="PX",
+                    help="input resolution for the federation, the clients' own "
+                         "validation, the centralised baseline and the holdout score -- "
+                         "one number, so the comparison stays fair. 0 (default) keeps "
+                         "the profile's 640 (320 for demo). BDD frames are 1280x720, so "
+                         "at 640 a traffic light is sub-20px; published YOLOv8 numbers on "
+                         "this dataset are 0.470 mAP50 at 640 against 0.625 at 1024. "
+                         "Costs activation memory as the square: the client scales its "
+                         "batch by (640/imgsz)^2")
     ap.add_argument("--local-bn", action="store_true",
                     help="FedBN: every vehicle keeps its own BatchNorm and takes the "
                          "rest from the aggregate. Aimed at CONDITION partitioning, "
@@ -347,6 +356,7 @@ def main(argv=None) -> int:
                  local_bn=args.local_bn, freeze_round1=args.freeze_round1,
                  server_ema=args.server_ema,
                  fix_bn_from_round=args.fix_bn_from_round,
+                 imgsz_override=args.imgsz,
                  ray_address=args.ray_address)
     if not 0 < cfg.gpu_fraction <= 1:
         # Ray accepts a fraction above 1 and then schedules nothing, so the run hangs

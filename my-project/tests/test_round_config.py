@@ -74,3 +74,12 @@ def test_freeze_is_off_unless_asked_for():
     `freeze` to Ultralytics when it is > 0, because freeze=0 is a value, not a silence."""
     assert round_config(1, 6, 4)["freeze"] == 0
     assert all(round_config(r, 3, 1)["freeze"] == 0 for r in range(1, 4))
+
+
+def test_the_image_size_is_a_property_of_the_round():
+    """Broadcast rather than read from a module constant, so the holdout and the
+    centralised baseline can be scored at the same resolution. The client used to take it
+    from DEFAULT_IMAGE_SIZE, which made the federation's size unreachable from the
+    pipeline -- and an unfair comparison one edit away."""
+    assert round_config(1, 6, 4)["imgsz"] == 640
+    assert round_config(3, 6, 4, imgsz=1024)["imgsz"] == 1024
