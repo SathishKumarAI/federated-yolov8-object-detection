@@ -6,20 +6,28 @@ Update this when you STOP working, not when you start.
 
 ## Where I stopped
 
-One integration branch, `feat/accuracy-program`, holding eight commits above the previous
-session's six. Everything is merged **into it**; nothing has reached `main` yet. Tests:
-**78 my-project + 175 pipeline = 253**, all green.
+**Everything is on `main`.** Squash-merged as `0184a646f` through
+[PR #64](https://github.com/SathishKumarAI/federated-yolov8-object-detection/pull/64) --
+29 commits from this session and the six from 2026-09-02 that had been stranded above it.
+`main` had not moved since PR #42; the stack that STATUS has called "the largest single
+item outstanding" for two sessions is gone.
+
+Green on `main`, checked after the merge rather than at merge time:
 
 ```
-main
- └── fix/experiment-passes-through-the-runners-levers   (6, from 2026-09-02)
-      └── feat/accuracy-program                         ← everything below is here
-           ├── test/shard-spotcheck  ·  docs/accuracy-findings
-           ├── fix/weights-that-travel                  the bug
-           ├── feat/head-freeze-round-one               ·  feat/server-side-ema
-           ├── feat/fixbn                               ·  perf/imgsz-as-a-lever
-           └── fix/flwr-launcher-blocked-by-app-control
+python -m pytest my-project/tests -q       80 passed
+python -m pytest pipeline/tests -q        226 passed
+python -m pipeline.measurements --check    15 of 15 records still match their source
+python -m pipeline.verify                 VERIFY: PASS
 ```
+
+All five CI checks passed, including the **19-minute federated simulation smoke on CPU**,
+which is the one that asserts the aggregate checksum changes between rounds -- so the
+transport change and the log-directory fix are validated on Linux by CI, not only here.
+
+The dashboard work came in on `feat/dashboard-2030`, built in a worktree at
+`.claude/worktrees/agent-ac52b9b8a00f0e71a`. Its content is all in `main`; the worktree and
+its branch are still on disk and can be removed whenever.
 
 ## The bug: FedAvg was not averaging what the clients trained
 
@@ -121,15 +129,14 @@ with a general test that no federation log may sit outside the searched director
 
 1. `--imgsz 1024` at 6 × 4. Largest expected effect, touches no data, and the baseline and
    holdout follow the same flag.
-3. `--freeze-round1 10`, then `--server-ema 0.7`, then `--fix-bn-from-round` at half the
+2. `--freeze-round1 10`, then `--server-ema 0.7`, then `--fix-bn-from-round` at half the
    run length. One at a time; each has to clear **±0.0077** to count.
-4. `--strategy fedadam` / `fedavgm` with an explicit `optimizer`, at a real budget — the
+3. `--strategy fedadam` / `fedavgm` with an explicit `optimizer`, at a real budget — the
    existing comparison ran 2 × 1, where a server-side optimiser has had two steps.
-5. **Per-class AP on the four classes `warm_start_head` could not warm** (`rider`,
+4. **Per-class AP on the four classes `warm_start_head` could not warm** (`rider`,
    `trailer`, `other person`, `other vehicle`). Free, and it tests *Where to Begin?*'s
    prediction about where the residual loss now sits.
-6. **Open the PR for `feat/accuracy-program` and squash-merge it.** `main` is still
-   ~80 commits behind.
+5. **Nothing is waiting on a merge.** `main` carries all of it.
 
 ## Verification
 
