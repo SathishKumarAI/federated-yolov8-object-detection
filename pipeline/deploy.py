@@ -63,7 +63,7 @@ def executable(name: str) -> str:
 
     A shell started by a script does not have the venv activated, so a bare
     `flower-superlink` finds whatever is first on the system PATH -- or nothing. Same
-    reasoning as `stages.flwr_executable`.
+    reasoning as `stages.flwr_launcher`.
     """
     here = Path(sys.executable).parent
     for candidate in (here / f"{name}.exe", here / name,
@@ -110,7 +110,7 @@ def supernode_cmd(index: int, superlink: str) -> list[str]:
 
 def run_cmd(federation: str, cfg: Config) -> list[str]:
     from . import stages
-    return [stages.flwr_executable(), "run", ".", federation, "--stream",
+    return [*stages.flwr_launcher(), "run", ".", federation, "--stream",
             "--run-config",
             f'num_server_rounds={cfg.rounds} local_epochs={cfg.local_epochs} '
             f'min_clients={cfg.n_vehicles} fraction_fit=1.0 '

@@ -270,12 +270,12 @@ def _flwr_launcher(monkeypatch):
     """`_cmd_federate` resolves the flwr launcher, and raises when there is none.
 
     These two tests are about the *arguments* it builds, not about where the binary
-    lives — `test_the_interpreters_scripts_directory_leads_the_path` covers that. So
+    lives — `test_the_flwr_launcher_never_runs_the_blocked_shim` covers that. So
     they failed on any machine without flwr installed, which includes the pipeline CI
     job by design: it installs pytest and pyyaml only, because the pipeline package
     imports torch and ultralytics lazily and its tests then run in under a second.
     """
-    monkeypatch.setattr(stages, "flwr_executable", lambda: "/nonexistent/flwr")
+    monkeypatch.setattr(stages, "flwr_launcher", lambda: ["/nonexistent/python", "-c", "x"])
 
 
 def test_init_args_are_omitted_when_attaching_to_an_existing_ray_cluster(_flwr_launcher):
@@ -1788,19 +1788,30 @@ def test_a_line_the_console_cannot_encode_does_not_kill_the_output_thread(monkey
 def test_flwr_is_resolved_next_to_the_interpreter_not_from_path(monkeypatch, tmp_path):
     """A shell a person types into has the venv on PATH; one started by a script does
     not, and the stage died with '[WinError 2] The system cannot find the file
-    specified' -- which names no file."""
+    specified' -- which names no file.
+
+    The shim next to the interpreter is now the *evidence* that flwr is installed here
+    rather than the thing that runs: Application Control blocks the generated .exe. What
+    must still hold is that the environment is the interpreter's own, not PATH's.
+    """
     fake = tmp_path / "flwr.exe"
     fake.write_bytes(b"")
-    monkeypatch.setattr(stages, "PY", str(tmp_path / "python.exe"))
-    assert stages.flwr_executable() == str(fake)
-    assert stages._cmd_federate(Config())[0] == str(fake)
+    fake_py = tmp_path / "python.exe"
+    monkeypatch.setattr(stages, "PY", str(fake_py))
+    monkeypatch.setattr(stages.shutil, "which", lambda _name: "/another/env/bin/flwr")
+
+    assert stages.flwr_launcher()[0] == str(fake_py),         "another environment's flwr on PATH must never win"
+    assert stages._cmd_federate(Config())[0] == str(fake_py)
 
 
 def test_a_missing_flwr_says_which_environment_to_install_it_into(monkeypatch, tmp_path):
+    """The shim's existence is what proves flwr is installed in this environment, even
+    though it is not what gets run. Without the check the failure would be a
+    ModuleNotFoundError from three frames inside typer instead of a sentence."""
     monkeypatch.setattr(stages, "PY", str(tmp_path / "python.exe"))
     monkeypatch.setattr(stages.shutil, "which", lambda _: None)
     with pytest.raises(RuntimeError, match="pip install flwr"):
-        stages.flwr_executable()
+        stages.flwr_launcher()
 
 
 def test_every_subprocess_is_told_to_write_utf8():
@@ -1812,6 +1823,25 @@ def test_every_subprocess_is_told_to_write_utf8():
     assert env["PYTHONIOENCODING"] == "utf-8"
     assert env["PYTHONUTF8"] == "1"
     assert env["FLWR_DISABLE_RUNTIME_DEPENDENCY_INSTALLATION"] == "1"
+
+
+def test_the_flwr_launcher_never_runs_the_blocked_shim():
+    """A run halted at the federate stage with
+
+        [WinError 4551] An Application Control policy has blocked this file
+
+    on `Scripts\flwr.exe`. A console script is an unsigned executable generated on this
+    machine, which is what those policies stop -- Smart App Control has already made conda
+    unusable here for the same reason. The interpreter runs the same CLI with no .exe to
+    block, so the launcher must be an interpreter invocation and must stay one."""
+    import sys
+
+    cmd = stages.flwr_launcher()
+
+    assert cmd[0] == sys.executable, "the launcher must be this interpreter"
+    assert cmd[1] == "-c" and "flwr.cli.app" in cmd[2]
+    assert not any(str(part).endswith(".exe") and "flwr" in str(part).lower()
+                   for part in cmd), "the shim is the thing that gets blocked"
 
 
 def test_the_interpreters_scripts_directory_leads_the_path():

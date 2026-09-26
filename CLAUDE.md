@@ -60,6 +60,7 @@ Open the one file that owns the thing. Do not read the package to find it.
 | ⚠ Aggregation strategy — **different branch and prompt** | `my-project/my_project/server_app.py` |
 | ⚠ Client training loop, checksums it logs — **ditto** | `my-project/my_project/client_app.py` |
 | ⚠ Data yaml, batch path resolution, model loading — **ditto** | `my-project/my_project/task.py` |
+| ⚠ What happens *inside* a round — FixBN, and per-step FedProx when it lands | `my-project/my_project/trainers.py` |
 
 Full dashboard map, including the rules that keep it split:
 [`pipeline/static/README.md`](pipeline/static/README.md).
@@ -123,9 +124,12 @@ Read these before assuming a green run means a working one.
 | B7 | federation ran to completion | checkpointing silently skipped every round |
 | — | run succeeded, checksums identical | shard too small for the batch size: **no optimizer step happened at all** |
 | — | `metrics.csv` showed 6 308 examples | only 10 images existed; `num_examples` is FedAvg's weight |
+| — | rounds completed, checksums changed every round | clients sent the **fp16-rounded EMA of `best.pt`**, not the weights they trained. `YOLO.train()` rebinds `yolo.model` to a reloaded checkpoint, and the checkpoint holds only `deepcopy(ema).half()`. Measured: 355/355 tensors leaving the client were exactly fp16-representable, against 58/355 in the live model |
 
 **The single most useful signal is the round-over-round aggregate checksum.** Equal
-consecutive values mean nothing is being learned, whatever the metrics say.
+consecutive values mean nothing is being learned, whatever the metrics say. It has a
+blind spot, found 2026-09-26: it proves *something* changed, never that the *right
+tensors* travelled. The fp16-EMA transport bug above moved the checksum every round.
 
 ## Facts about the training stack, measured 2026-08-16
 
@@ -237,6 +241,12 @@ of them. Re-run the probes before believing them on 8.4.138.
 
 - Use the venv on **python.org 3.12**, not conda: Smart App Control blocks
   conda-forge's `_bz2.pyd`. See `docs/ENV_WINDOWS.md`.
+- **Windows Application Control blocks `Scriptslwr.exe`**, measured 2026-09-26: a run
+  halted at the federate stage with `[WinError 4551] An Application Control policy has
+  blocked this file`. A console script is an unsigned .exe generated on this machine,
+  which is what those policies stop — the same mechanism that makes conda unusable here.
+  `stages.flwr_launcher()` therefore returns `python -c "from flwr.cli.app import app;
+  app()"`, which is what the shim wraps. Do not "fix" this back to the .exe.
 - Export `FLWR_DISABLE_RUNTIME_DEPENDENCY_INSTALLATION=1` before `flwr run`, or flwr
   builds its own runtime env with the CPU-only torch wheel and every client trains on
   CPU at ~5.5x wall clock, silently.

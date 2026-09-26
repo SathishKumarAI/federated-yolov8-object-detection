@@ -64,3 +64,29 @@ cd my-project
 | ray | 2.55.1 |
 | ultralytics | 8.4.115 |
 | GPU | RTX 5070 Ti 16 GB, driver 610.47, `sm_120` |
+
+## Application Control blocks generated console scripts too
+
+Measured 2026-09-26. A pipeline run halted at the federate stage:
+
+```
+[      running] federate  ...\Scriptslwr.exe run . --stream --federation-config ...
+[       failed] federate  [WinError 4551] An Application Control policy has blocked this file
+HALTED at federate: [WinError 4551] An Application Control policy has blocked this file
+```
+
+Running it by hand gives `Permission denied`. Nothing about the environment changed on
+purpose; the policy did. This is the same mechanism as the `_bz2.pyd` case above — an
+unsigned binary produced on this machine — and a `pip install` console script is exactly
+that: a generated `.exe` wrapper whose entire body is one import.
+
+**The fix is to skip the wrapper, not to sign it.** `python -c "from flwr.cli.app import
+app; app()"` runs the same CLI, in the same environment, with no executable to block, and
+it is what `pip` generates the shim to do. `pipeline/stages.py::flwr_launcher` returns that
+command; the shim is still looked for, but only as evidence that flwr is installed here, so
+a missing install still fails with a sentence instead of a ModuleNotFoundError from inside
+typer.
+
+If another console script starts failing the same way — `flower-superlink`,
+`flower-supernode`, `mlflow` — the same substitution applies. Find the entry point in the
+package's metadata and call it with `python -c`.

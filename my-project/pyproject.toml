@@ -117,25 +117,41 @@ imgsz = 640
 # `git checkout -- pyproject.toml` after a run, and change live settings with
 # `flwr run . --federation-config "..."` or in ~/.flwr/config.toml.
 
-[tool.flwr.federations]
-default = "local-simulation"
 
-[tool.flwr.federations.local-simulation]
-options.num-supernodes = 2
-options.backend.client-resources.num-cpus = 4
-# num-gpus = 1.0 on a single-card host makes Ray schedule clients ONE AT A TIME on
-# the GPU: slower, but no OOM. Drop to 0.5/0.33 only once you know one client's real
-# footprint. Set to 0 to fall back to CPU-only hosts.
-options.backend.client-resources.num-gpus = 1.0
-# flwr >= 1.31 reads `init-args` with dashes; the old `init_args.num_cpus` spelling
-# is parsed as an unknown key and silently ignored.
-options.backend.init-args.num-cpus = 8
-options.backend.init-args.num-gpus = 1
+#######################################################################
+# CONFIGURATION MIGRATION NOTICE:
+#
+# What was previously called "federation config" for SuperLink
+# connections in pyproject.toml has been renamed and moved.
+#
+# These settings are now **SuperLink connection configuration**
+# and are defined in the Flower configuration file.
+#
+# The entries below are commented out intentionally and are kept
+# only as a migration reference.
+#
+# Docs: https://flower.ai/docs/framework/ref-flower-configuration.html
+#######################################################################
 
-# Real distributed deployment (Flower Deployment Engine): one SuperLink + N
-# SuperNodes over gRPC+TLS. Point `address` at the SuperLink Exec API (9093) and
-# `root-certificates` at the CA cert. Run with: flwr run . remote-deployment
-# Override the host with the FL_SUPERLINK_HOST env at launch time if templating.
-[tool.flwr.federations.remote-deployment]
-address = "127.0.0.1:9093"
-root-certificates = "certs/ca.crt"
+# [tool.flwr.federations]
+# default = "local-simulation"
+
+# [tool.flwr.federations.local-simulation]
+# options.num-supernodes = 2
+# options.backend.client-resources.num-cpus = 4
+# # num-gpus = 1.0 on a single-card host makes Ray schedule clients ONE AT A TIME on
+# # the GPU: slower, but no OOM. Drop to 0.5/0.33 only once you know one client's real
+# # footprint. Set to 0 to fall back to CPU-only hosts.
+# options.backend.client-resources.num-gpus = 1.0
+# # flwr >= 1.31 reads `init-args` with dashes; the old `init_args.num_cpus` spelling
+# # is parsed as an unknown key and silently ignored.
+# options.backend.init-args.num-cpus = 8
+# options.backend.init-args.num-gpus = 1
+
+# # Real distributed deployment (Flower Deployment Engine): one SuperLink + N
+# # SuperNodes over gRPC+TLS. Point `address` at the SuperLink Exec API (9093) and
+# # `root-certificates` at the CA cert. Run with: flwr run . remote-deployment
+# # Override the host with the FL_SUPERLINK_HOST env at launch time if templating.
+# [tool.flwr.federations.remote-deployment]
+# address = "127.0.0.1:9093"
+# root-certificates = "certs/ca.crt"

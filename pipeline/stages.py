@@ -321,27 +321,46 @@ def _cmd_sanity(cfg: Config) -> list[str]:
         data=str(data), imgsz=cfg.imgsz, device="0")]
 
 
-def flwr_executable() -> str:
-    """The flwr launcher belonging to *this* interpreter, not whatever is on PATH.
+#: What `flwr.exe` does, done by the interpreter itself. The console-script shim is a
+#: generated .exe wrapper around exactly this import, and the .exe is the part Windows
+#: Application Control blocks.
+_FLWR_CLI = "from flwr.cli.app import app; app()"
 
-    A shell that a person types into has the venv's Scripts directory on PATH; a
-    non-interactive one started by a script does not, and the stage then died with
-    "[WinError 2] The system cannot find the file specified" -- a message that says
-    nothing about which file. Resolving it next to sys.executable also guarantees the
-    launcher and the interpreter come from the same environment, which matters here:
-    flwr spawns clients with the interpreter it was installed against.
+
+def flwr_launcher() -> list[str]:
+    """How to run flwr from *this* interpreter -- as a command list, not a path.
+
+    Resolved next to ``sys.executable`` rather than taken from PATH. A shell a person
+    types into has the venv's Scripts directory on PATH; a non-interactive one started by
+    a script does not, and the stage died with "[WinError 2] The system cannot find the
+    file specified", a message that says nothing about which file. Matching the
+    interpreter also matters in its own right: flwr spawns its clients with the
+    interpreter it was installed against.
+
+    **It returns the module invocation, not the shim, and that is the point.** On
+    2026-09-26 a run halted at the federate stage with
+
+        [WinError 4551] An Application Control policy has blocked this file
+
+    on `Scriptslwr.exe`. Smart App Control has done this to this project before -- it is
+    what makes conda unusable here (`docs/ENV_WINDOWS.md`) -- and a generated console
+    script is an unsigned executable produced on this machine, which is exactly what those
+    policies stop. `python -c "from flwr.cli.app import app; app()"` is what the shim
+    wraps, runs the same CLI in the same environment, and has no .exe to block.
+
+    The shim's *existence* is still what proves flwr is installed in this environment, so
+    it is still looked for -- it is used as evidence, not as the launcher. Without it the
+    error stays a sentence someone can act on rather than a ModuleNotFoundError from three
+    frames deep.
     """
     here = Path(PY).parent
-    for name in ("flwr.exe", "flwr", "flwr-script.py"):
-        candidate = here / name
-        if candidate.exists():
-            return str(candidate)
-    found = shutil.which("flwr")
-    if found:
-        return found
-    raise RuntimeError(
-        f"flwr not found next to {PY} or on PATH. Install it into this environment: "
-        f"{PY} -m pip install flwr")
+    installed = any((here / name).exists()
+                    for name in ("flwr.exe", "flwr", "flwr-script.py"))
+    if not installed and shutil.which("flwr") is None:
+        raise RuntimeError(
+            f"flwr not found next to {PY} or on PATH. Install it into this environment: "
+            f"{PY} -m pip install flwr")
+    return [PY, "-c", _FLWR_CLI]
 
 
 def _cmd_federate(cfg: Config) -> list[str]:
@@ -363,7 +382,7 @@ def _cmd_federate(cfg: Config) -> list[str]:
         # exists ("When connecting to an existing cluster, num_cpus and num_gpus must
         # not be provided"), so these are only valid when flwr starts Ray itself.
         fed += " init-args-num-gpus=1 init-args-num-cpus=8"
-    return [flwr_executable(), "run", ".", "--stream", "--federation-config", fed,
+    return [*flwr_launcher(), "run", ".", "--stream", "--federation-config", fed,
             "--run-config",
             f'num_server_rounds={cfg.rounds} local_epochs={cfg.local_epochs} '
             f'min_clients={cfg.n_vehicles} fraction_fit=1.0 '

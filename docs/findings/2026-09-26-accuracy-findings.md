@@ -170,17 +170,21 @@ Expected mAP per GPU-hour, on this machine, **without changing any data**. Item 
 1–7: if the probe finds the two state dicts identical, Part 1 is wrong and gets struck
 rather than built on.
 
-| # | change | branch | cost | why |
-|---|---|---|---|---|
-| **0** | **prove Part 1** — checksum `trainer.model` against `yolo.model` after one `train()` | `fix/weights-that-travel` | minutes | decides whether the rest of this document is real |
-| **1** | **send the trained fp32 weights** — take them from the trainer, not the reloaded checkpoint | same | one line ⚠ | removes the best-epoch lottery, the fp16 rounding, and the hidden `save=False` semantics change together |
-| **2** | **`imgsz = 1024`**, batch down, `--gpu-fraction 1.0` | `perf/imgsz-1024` | 1 run | biggest absolute-mAP lever that touches no data |
-| **3** | **`local_epochs = 1`, rounds up** | already the plan | — | second reason now: the warmup clamp *and* the best-epoch lottery both vanish at 1 epoch |
-| **4** | **head schedule** — `freeze=10` on round 1, then full | `feat/head-freeze-round-one` | small ⚠ | LP-FT, FedBABU and FedSTO independently |
-| **5** | **server-side EMA of the aggregate** | `feat/server-side-ema` | small ⚠ | answers 1c without touching a client |
-| **6** | **explicit `optimizer` on clients, adaptivity on the server** | `feat/server-adaptive-client-sgd` | 2 runs | the side that is reset every round should not be the adaptive one |
-| **7** | **FixBN** as the first BN experiment, before FedBN | `feat/fixbn` | small ⚠ | keeps one global model, so the holdout stays meaningful |
-| **8** | **per-class AP on the four un-warmed classes** | — | free | tests *Where to Begin?*'s prediction; says whether to spend on the head or the aggregation |
+| # | change | status | why |
+|---|---|---|---|
+| **0** | **prove Part 1** — checksum `trainer.model` against `yolo.model` after one `train()` | **done**, `fix/weights-that-travel`. Confirmed bit-exactly; numbers above | decided whether the rest of this document was real |
+| **1** | **send the trained fp32 weights** — from the trainer, not the reloaded checkpoint | **done**, same branch. `trained_model` property; both checksums logged every round | removed the best-epoch lottery, the fp16 rounding, and the hidden `save=False` semantics change together |
+| **2** | **`imgsz` as one number for federation, clients' val, baseline and holdout** | **done**, `perf/imgsz-as-a-lever`. `--imgsz PX`; **not yet run at 1024** | biggest absolute-mAP lever that touches no data. `_cmd_baseline` and `_cmd_evaluate` already took the flag, so raising it cannot silently become an unfair win |
+| **3** | **`local_epochs = 1`, rounds up** | reachable already; a run, not a change | second reason now: the warmup clamp *and* the best-epoch lottery both vanish at 1 epoch |
+| **4** | **head schedule** — `freeze=10` on round 1, then full | **done**, `feat/head-freeze-round-one`. `--freeze-round1 10`, default 0 | LP-FT, FedBABU and FedSTO independently. Measured: it also pins the backbone's BN statistics, so round 1 federates only the head |
+| **5** | **server-side EMA of the aggregate** | **done**, `feat/server-side-ema`. `--server-ema D`, bias-corrected, default 0 | answers 1c without touching a client |
+| **6** | **explicit `optimizer` on clients, adaptivity on the server** | **no code needed** — `optimizer` and `strategy` are already run-config keys. Two runs | the side that is reset every round should not be the adaptive one |
+| **7** | **FixBN** as the first BN experiment, before FedBN | **done**, `feat/fixbn`. `--fix-bn-from-round R`, default 0 | keeps one global model, so unlike FedBN the holdout stays meaningful |
+| **8** | **per-class AP on the four un-warmed classes** | reachable already (`holdout --evaluate` prints it) | tests *Where to Begin?*'s prediction; says whether to spend on the head or the aggregation |
+
+**Every lever above defaults to off.** Nothing this document changed moves a number that
+has already been measured, which is deliberate: the levers and the measurements are
+separate pieces of work, and mixing them would make the first comparison uninterpretable.
 
 ⚠ touches `my-project/`, so a separate branch and prompt each, per
 [`CONTRIBUTING.md`](../../CONTRIBUTING.md).
