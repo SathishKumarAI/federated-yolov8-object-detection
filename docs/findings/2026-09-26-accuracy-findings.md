@@ -186,6 +186,79 @@ rather than built on.
 has already been measured, which is deliberate: the levers and the measurements are
 separate pieces of work, and mixing them would make the first comparison uninterpretable.
 
+---
+
+## Part 5 — what the fix is actually worth, and a number that does not add up
+
+### The transport fix, measured against itself
+
+`MEASURED`. One real round on `batch_1`, then **both** candidate weight sources scored on
+the same 1 000-image holdout (`3af571c2c901`) — no federation in between, so nothing else
+can move:
+
+| what the client sends | mAP50 | mAP50-95 | P | R |
+|---|---|---|---|---|
+| `trainer.model` — after the fix | **0.2324** | 0.1217 | 0.427 | 0.246 |
+| `yolo.model` — before the fix | 0.2282 | 0.1191 | 0.520 | 0.246 |
+
+**+0.0042 mAP50.** Larger than the measured ±0.0018 half-range, from a single pair, so:
+suggestive, not established. What it is *not* is large. The bug was real and bit-exact; its
+accuracy cost, at one epoch on one client, is small.
+
+**And fp16 cannot be the mechanism at the federation level, for a reason worth recording.**
+The server's saved checkpoints are themselves fp16 — Ultralytics' save path halves them —
+so every holdout score this project has ever reported, before and after, was computed on an
+fp16 model:
+
+```
+checkpoint: global_round_2.pt
+tensors whose max exceeds fp16 max (65504): 0
+float tensors altered by .half().float():   0
+```
+
+Zero altered means the file was already fp16. The fix changes what gets *averaged*, not the
+precision of what gets *scored*.
+
+### The number that does not add up
+
+The same configuration the noise floor was measured at — 6 vehicles × 1 400 images, 2
+rounds × 1 epoch, random partition, the same holdout, every new lever off:
+
+| | round 1 | round 2 |
+|---|---|---|
+| **2026-09-26, after the fix** | 0.1936 | **0.2210** |
+| 2026-09-02, FedAvg arm | 0.1045 | 0.1201 |
+| 2026-09-02, seed sweep (n=3) | — | 0.1179 ± 0.0018 |
+
+`VERIFY: PASS` on all four criteria; 484 s, 9.70 Wh, peak VRAM 6 908 MiB.
+
+**+0.103 mAP50 is 57× the measured half-range, and the controlled comparison above says the
+transport fix is worth +0.004.** So the two are not the same claim, and this one is not
+attributed. Three things are ruled out: the holdout is bit-identical (`3af571c2c901`,
+computed, not assumed), every new lever is `0`/`False` in the run's own `report.json`, and
+the image size is the same 640.
+
+What points at the **older** runs rather than at this one: this project's own record says the
+warm-started model scores **0.2582** on the holdout untrained, and that round 1 *costs* it
+**0.066** — which lands at ≈0.192, and this run's round 1 is **0.1936**. The 2026-09-02
+arms' round 1 of 0.1045 sits ~0.09 *below* the untrained warm model, which is a much worse
+round 1 than the documented damage accounts for.
+
+So the honest reading is that **the noise floor's own arms are now suspect**, and the floor
+is being re-measured on this code before any lever is judged against it. That is the same
+shape as the ±0.016 correction: a number inherited as ground truth and used to accept or
+dismiss differences, without its own provenance ever being checked.
+
+### A stale-data bug found on the way, not fixed here
+
+The run report's per-vehicle section, for a **6**-vehicle **2**-round run, lists eight
+vehicle ids with one, two and three rounds each. `pipeline/report.py` reads the per-PID
+client logs under `my-project/logs/`, and those accumulate across runs — including the two
+crashed attempts from the same afternoon. The holdout numbers, the checksums and the verify
+criteria are unaffected (they come from the server log and the checkpoints), but every
+per-vehicle figure in a report may be mixing runs. Filed here rather than fixed, because it
+is outside this branch's scope and the Plane MCP server is not reachable this session.
+
 ⚠ touches `my-project/`, so a separate branch and prompt each, per
 [`CONTRIBUTING.md`](../../CONTRIBUTING.md).
 
