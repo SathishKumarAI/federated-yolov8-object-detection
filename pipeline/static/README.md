@@ -18,6 +18,7 @@ reload. ES modules, no bundler, no CDN, no network at runtime.
 | The fleet grid, the comparison and divergence charts | `js/fleet.js` | |
 | The per-vehicle drawer | `js/drawer.js` | |
 | The Data tab: counts, mixes, the shard table | `js/data.js` | |
+| The Weights tab: what travels, the rendered kernels, the FedAvg identity | `js/anatomy.js` | the numbers come from `pipeline/anatomy.py` |
 | Label boxes over a frame, and the trainer's own pictures | `js/consumed.js` | the only file that draws over an image |
 | Helpers, colours, condition glyphs | `js/util.js` | |
 | What the views share | `js/state.js` | one object, documented per field |
@@ -50,7 +51,10 @@ reload. ES modules, no bundler, no CDN, no network at runtime.
    measured" and carries the reason.
 8. **A number on screen cites where it was measured.** The record lives in
    `pipeline/measurements.py`, whose `--check` mode re-reads the document it names.
-   A panel that prints a figure with no row there is a bug.
+   A panel that prints a figure with no row there is a bug. The Weights tab is the one
+   place a figure may have no row: everything on it is computed from a named file at
+   request time, which is a stronger provenance than a recorded constant — so the panel
+   prints the file, its size and its mtime instead of a citation, and says it is doing so.
 
 ## Server routes it depends on
 
@@ -65,6 +69,7 @@ reload. ES modules, no bundler, no CDN, no network at runtime.
 | `GET /api/profile` | seconds per phase for the last run, plus the verdict |
 | `GET /api/simulate?...` | a projection for an arbitrary configuration; read-only |
 | `GET /api/demo` | a recorded run in /api/state's shape, its sources, and its gaps |
+| `GET /api/anatomy` | the newest global checkpoint, read out: tensors by kind, the first convolution's kernels, the head's class biases, bytes on the wire, and `roundtrip.py`'s verdict |
 | `GET /api/vehicle/<vid>` | shard composition and sample image names |
 | `GET /api/shard-image/<vid>/<name>` | one image out of that vehicle's shard |
 | `GET /api/shard-labels/<vid>/<name>` | that frame's label rows, normalised, for the overlay |

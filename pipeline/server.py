@@ -23,7 +23,7 @@ from pathlib import Path
 
 from urllib.parse import parse_qs, unquote
 
-from . import (baseline, dataset_stats, demo_run, docs_index, gpu, holdout, ledger,
+from . import (anatomy, baseline, dataset_stats, demo_run, docs_index, gpu, holdout, ledger,
                logparse, measurements, nodes, paths, plan, profile as profiler, stages,
                statestream, train_artifacts, vehicle_metrics, vehicles, verify)
 from .runner import Run
@@ -324,6 +324,14 @@ class Handler(BaseHTTPRequestHandler):
             # disk, and a spread from this machine's own repeats beats a recorded one.
             return self._json({**measurements.table(),
                                "observed_spread": measurements.observed_spread(ledger.load())})
+        if self.path.split("?")[0] == "/api/anatomy":
+            # What travels between the server and the vehicles, read out of the newest
+            # global checkpoint. Deliberately NOT part of /api/state: it costs a 22 MB
+            # torch load on a cache miss, and it only changes when a round writes a
+            # checkpoint. The fleet size and round count come from the running config so
+            # the bytes-on-the-wire arithmetic describes this run rather than a default.
+            return self._json(anatomy.payload(vehicles=CONFIG.n_vehicles,
+                                              rounds=CONFIG.rounds))
         if self.path.split("?")[0] == "/api/profile":
             # Seconds per phase, parsed out of the logs the run already wrote. Costs a
             # full read of every client log, so it is fetched when someone looks at the

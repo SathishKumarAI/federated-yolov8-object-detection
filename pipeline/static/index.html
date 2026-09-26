@@ -19,6 +19,7 @@
     <button class="tab" role="tab" aria-selected="true"  aria-controls="view-control" data-view="control">Control</button>
     <button class="tab" role="tab" aria-selected="false" aria-controls="view-live" data-view="live">Live</button>
     <button class="tab" role="tab" aria-selected="false" aria-controls="view-data" data-view="data">Data</button>
+    <button class="tab" role="tab" aria-selected="false" aria-controls="view-weights" data-view="weights">Weights</button>
     <button class="tab" role="tab" aria-selected="false" aria-controls="view-metrics" data-view="metrics">Metrics</button>
     <button class="tab" role="tab" aria-selected="false" aria-controls="view-plan" data-view="plan">Plan</button>
     <button class="tab" role="tab" aria-selected="false" aria-controls="view-simulate" data-view="simulate">Simulate</button>
@@ -323,6 +324,95 @@
     <button id="dataRefresh" style="margin-left:auto">Recount</button>
   </div>
   <div id="dataBody" class="grid"></div>
+</section>
+
+<!-- ===================================================================== WEIGHTS -->
+<!-- What travels between the server and the vehicles. Every number in here is read out
+     of a real checkpoint by pipeline/anatomy.py at request time; the live half comes
+     from the same /api/state snapshot every other panel uses. -->
+<section id="view-weights" class="grid" hidden role="tabpanel" aria-label="Weights">
+  <div class="panel">
+    <h2>What actually travels <span class="n" id="anWhen">reading the checkpoint…</span></h2>
+    <p class="lede">A federation never moves a photograph. What goes back and forth is
+      <b>a list of numbers</b> — the model's own weights. Down from the server: one copy of
+      the averaged model. Up from each vehicle: its own copy after training on images
+      nobody else saw, plus one integer saying how many images that was.</p>
+    <div class="readouts" id="anTotals"></div>
+    <!-- The recording has no checkpoint of its own, so while it plays the model below is
+         still this machine's. Said here rather than left to be assumed. -->
+    <p class="hint" id="anReplayNote" hidden></p>
+    <p class="hint" id="anProvenance"></p>
+  </div>
+
+  <div class="panel">
+    <h2>What is in it <span class="n">by kind, counted from the file</span></h2>
+    <div id="anKinds"></div>
+    <div class="stacks" id="anShares" style="margin-top:var(--s4)"></div>
+    <div class="legend" id="anSharesLegend"></div>
+    <p class="hint" id="anKindsNote"></p>
+  </div>
+
+  <div class="panel">
+    <h2>One weight, rendered <span class="n" id="anConvWhich"></span></h2>
+    <p class="lede">The very first convolution is the one place where a weight is
+      something a person can look at. Its three inputs <em>are</em> red, green and blue,
+      so each of its filters is literally a 3×3 colour image — and what it has learned to
+      look for is visible in it.</p>
+    <div class="kernels" id="anKernels" role="img" aria-label="the first convolution's kernels"></div>
+    <p class="hint" id="anConvNote"></p>
+  </div>
+
+  <div class="grid two" style="grid-template-columns:1fr 1fr">
+    <div class="panel">
+      <h2>The statistics it learned by watching <span class="n">BatchNorm buffers</span></h2>
+      <p class="lede">Not learned by gradient descent: measured. Each normalisation layer
+        keeps the average and the spread of everything it has seen, which is a summary of
+        the <em>conditions the vehicle drove in</em>.</p>
+      <figure style="margin:0">
+        <svg class="chart" id="anRunningMean" viewBox="0 0 900 220" role="img"
+             aria-label="distribution of BatchNorm running means"></svg>
+        <figcaption class="prov" id="anRunningMeanCap"></figcaption>
+      </figure>
+      <figure style="margin:var(--s4) 0 0">
+        <svg class="chart" id="anRunningVar" viewBox="0 0 900 220" role="img"
+             aria-label="distribution of BatchNorm running variances"></svg>
+        <figcaption class="prov" id="anRunningVarCap"></figcaption>
+      </figure>
+      <p class="hint" id="anBnNote"></p>
+    </div>
+
+    <div class="panel">
+      <h2>Where “it knows what a car is” lives <span class="n">head class bias</span></h2>
+      <p class="lede">One number per class, per detection scale: how ready the model is to
+        say “car” before it has looked at anything. Thirteen names, thirteen numbers —
+        this is the closest a weight comes to having a meaning you can say out loud.</p>
+      <div id="anHead"></div>
+      <p class="hint" id="anHeadNote"></p>
+    </div>
+  </div>
+
+  <div class="panel">
+    <h2>On the wire <span class="n" id="anWireWhen"></span></h2>
+    <div id="anWire"></div>
+    <p class="hint" id="anWireNote"></p>
+  </div>
+
+  <div class="panel" id="anRoundtripPanel">
+    <h2>The averaging, as arithmetic <span class="n">is anything really being exchanged?</span></h2>
+    <p class="lede">A checksum here is the <em>sum</em> of all the weights, so averaging the
+      models has to average their checksums too. If the published aggregate equals the
+      vehicles' own numbers weighted by how many images each trained on, the federation is
+      real — and if a vehicle were dropped, double-counted, or handed back what it was
+      given, this is where it would show.</p>
+    <div id="anRoundtrip"></div>
+    <p class="hint" id="anRoundtripNote"></p>
+  </div>
+
+  <div class="panel">
+    <h2>This round, per vehicle <span class="n" id="anLiveWhen">live</span></h2>
+    <div id="anLive"></div>
+    <p class="hint" id="anLiveNote"></p>
+  </div>
 </section>
 
 <!-- ===================================================================== METRICS -->

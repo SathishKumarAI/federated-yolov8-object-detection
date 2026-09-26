@@ -115,6 +115,16 @@ ROLES: dict[str, dict] = {
                        "and the fields nobody measured are absent with a written reason.",
         "tab": "Live",
     },
+    "anatomy": {
+        "command": "python -m pipeline.anatomy",
+        "contributes": "Opens the newest global checkpoint and says what is in it: 355 "
+                       "arrays, eleven million numbers, the first convolution as 32 "
+                       "colour images, and the head's bias for each of the thirteen "
+                       "class names. It is what lets the page show that weights travel "
+                       "and images do not — and with no checkpoint it says there is "
+                       "none rather than showing a model made of zeros.",
+        "tab": "Weights",
+    },
     "statestream": {
         "command": "python -m pipeline.statestream",
         "contributes": "The diff format behind the dashboard's push stream. An idle "
@@ -191,6 +201,10 @@ TABS = [
     {"name": "Data", "answers": "What is the fleet actually training on, and does the "
                                 "holdout look like it?",
      "reads": "dataset_stats, cached against the fleet fingerprint"},
+    {"name": "Weights", "answers": "What actually travels between the server and the "
+                                   "vehicles, and is the aggregate really the mean of "
+                                   "what came back?",
+     "reads": "anatomy, from the newest global checkpoint; roundtrip, from the run's logs"},
     {"name": "Plan", "answers": "What will this configuration cost, and what would a "
                                 "fair comparison need?",
      "reads": "plan.budget, plan.commands, stages.snapshot"},

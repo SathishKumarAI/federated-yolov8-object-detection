@@ -31,6 +31,20 @@ const STEPS = [
       "signal that catches it, and a chart can make a real change look flat, so the " +
       "subtraction is printed." },
 
+  { title: "What a checksum is a checksum of", panel: "anTotals", tab: "weights",
+    body: "The Weights tab opens the newest global checkpoint and shows the thing itself: " +
+      "355 arrays of numbers, 11 million of them, the first convolution drawn as 32 " +
+      "little colour images, and the detection head's bias for each of the thirteen " +
+      "class names. It also shows the averaging as arithmetic — each vehicle's number, " +
+      "how many images it trained on, and whether the published aggregate really is " +
+      "their weighted mean.",
+    mistake: "Taking \"federated\" on trust. Nothing else on this page says what moves " +
+      "between the server and a vehicle, so nothing else can show that it is weights " +
+      "and not photographs — or that the aggregate is the mean of what came back rather " +
+      "than one vehicle's copy of it. Every number there is read out of a file on disk " +
+      "when you ask for it; with no checkpoint the panel says so instead of showing " +
+      "zeros." },
+
   { title: "Round progress", panel: "rRound",
     body: "Rounds completed, vehicles heard from, the latest self-evaluated mAP and " +
       "loss, and how many global checkpoints exist.",
