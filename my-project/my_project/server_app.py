@@ -17,8 +17,8 @@ from flwr.server.client_manager import ClientManager
 os.environ["ULTRALYTICS_HUB"] = "0"
 from ultralytics import YOLO
 from my_project.task import download_model, should_checkpoint, IS_WINDOWS, OS_NAME
-from my_project.get_set_model import (NUM_CLASSES_MODEL_YAML, get_weights, set_weights,
-                                      warm_start_head)
+from my_project.get_set_model import (NUM_CLASSES_MODEL_YAML, get_weights,
+                                      learning_checksum, set_weights, warm_start_head)
 
 from utils.logging_setup import configure_logging
 from utils.metrics_logger import MetricsLogger, aggregate_client_metrics
@@ -113,29 +113,6 @@ def round_config(server_round: int, num_rounds: int, local_epochs: int, *,
         # ceiling at 640 is not a comparison.
         "imgsz": int(imgsz),
     }
-
-
-def learning_checksum(weights) -> float:
-    """Sum of the LEARNED tensors only -- the B4 guard's arithmetic.
-
-    Integer buffers are excluded, and that exclusion is the whole point.
-    `num_batches_tracked` is int64 and climbs by one per optimizer step in every BatchNorm
-    layer, so with 57 of them and 88 steps a round it adds roughly +5 000 to a naive sum
-    every round, monotonically, whatever the weights do. A frozen model would still show a
-    moving checksum.
-
-    It did not use to matter: until 2026-09-26 the clients sent `best.pt`'s EMA, and
-    `ModelEMA.update` lerps only floating-point tensors, so every counter arrived as 0 and
-    the sum was float-only by accident. Sending the trained module -- the fix for that bug
-    -- brought the real counters with it, and would have quietly blunted the single signal
-    this project trusts most: "equal consecutive checksums mean nothing is being learned".
-
-    Consequence to state rather than hide: checksums logged before and after this change are
-    not comparable with each other. The comparison that matters is round-to-round inside one
-    run, which is what `pipeline/logparse.py` reads.
-    """
-    return float(sum(w.sum() for w in weights
-                     if w.size > 0 and w.dtype.kind == "f"))
 
 
 class BatchAssignmentMixin:

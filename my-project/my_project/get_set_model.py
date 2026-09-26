@@ -40,6 +40,23 @@ BDD_CLASSES = ["person", "rider", "car", "truck", "bus", "train", "motorcycle",
 #: classes BDD most often confuses at exactly the same place.
 APPROXIMATE_FROM_COCO = {"traffic sign": "stop sign"}
 
+def learning_checksum(arrays) -> float:
+    """Sum of the LEARNED tensors only -- the arithmetic the B4 guard runs on.
+
+    Integer buffers are excluded, and that exclusion is the point. `num_batches_tracked` is
+    int64 and climbs by one per optimizer step in every BatchNorm layer, so with 57 of them
+    and 88 steps a round a naive sum rises about +5 000 every round whatever the weights do.
+    A frozen model would still show a moving checksum.
+
+    Both sides use this one function, and that is what makes the round trip checkable: a
+    checksum is a SUM, so it is linear, and FedAvg's weighted mean of client weights has to
+    produce exactly the weighted mean of their checksums. `pipeline/roundtrip.py` tests that
+    identity against the logs. Two different checksum definitions would make the identity
+    untestable rather than false, which is worse.
+    """
+    return float(sum(a.sum() for a in arrays if a.size > 0 and a.dtype.kind == "f"))
+
+
 def get_normalized_path(path):
     """
     Normalize path to the current operating system format.

@@ -20,7 +20,7 @@ from my_project.task import (
 )  # Import OS detection
 import urllib
 from my_project.get_set_model import (NUM_CLASSES_MODEL_YAML, batchnorm_keys, get_weights,
-                                      set_weights, warm_start_head)
+                                      learning_checksum, set_weights, warm_start_head)
 from my_project.trainers import fixbn_trainer
 from utils.logging_setup import configure_logging
 
@@ -193,7 +193,7 @@ class FlowerClient(Client):
             weights_list = get_weights(self.model)
         
         # Track weights checksum for debugging weight transfer
-        weights_checksum = sum(w.sum() for w in weights_list if w.size > 0)
+        weights_checksum = learning_checksum(weights_list)
         logger.info(f"[Client] Received weights with checksum: {weights_checksum}")
         
         try:
@@ -398,9 +398,9 @@ class FlowerClient(Client):
             # Summed straight off the tensors rather than through get_weights: that would
             # copy all 355 of them to host memory as numpy, ~44 MB per client per round,
             # to produce one float. A log line is not worth a second serialisation.
-            reloaded_checksum = sum(
-                float(t.sum()) for t in self.model.state_dict().values() if t.numel())
-            trained_checksum = sum(w.sum() for w in updated_weights if w.size > 0)
+            reloaded_checksum = sum(float(t.sum()) for t in self.model.state_dict().values()
+                                    if t.numel() and t.dtype.is_floating_point)
+            trained_checksum = learning_checksum(updated_weights)
             logger.info(
                 f"[Client] trained weights checksum {trained_checksum}; the reloaded "
                 f"best.pt EMA would have sent {reloaded_checksum}")
@@ -418,8 +418,12 @@ class FlowerClient(Client):
                 ]
                 metrics["proximal_mu"] = proximal_mu
 
-            updated_checksum = sum(w.sum() for w in updated_weights if w.size > 0)
-            logger.info(f"[Client] Sending back weights with checksum: {updated_checksum}")
+            updated_checksum = learning_checksum(updated_weights)
+            # num_examples travels with it because it is FedAvg's WEIGHT: the aggregate is
+            # the num_examples-weighted mean, and `pipeline/roundtrip.py` cannot check that
+            # identity without knowing what each client was weighted by.
+            logger.info(f"[Client] Sending back weights with checksum: {updated_checksum} "
+                        f"(num_examples={int(num_examples)})")
             
             return FitRes(
                 parameters=self._list_to_parameters(updated_weights),
@@ -453,7 +457,7 @@ class FlowerClient(Client):
             weights_list = get_weights(self.model)
             
         # Track weights checksum for debugging weight transfer
-        weights_checksum = sum(w.sum() for w in weights_list if w.size > 0)
+        weights_checksum = learning_checksum(weights_list)
         logger.info(f"[Client] Received evaluation weights with checksum: {weights_checksum}")
             
         # 2) Apply weights to model

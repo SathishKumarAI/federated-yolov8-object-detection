@@ -19,9 +19,11 @@ whole flow and visualises a simulated vehicle fleet while it runs.
 | **What does Flower × YOLO actually need, measured?** | [`docs/FEDERATED_DETECTION.md`](docs/FEDERATED_DETECTION.md) |
 | How do I run the model live on other machines? | [`docs/REALTIME_NODES.md`](docs/REALTIME_NODES.md) |
 | What should I build? | [`docs/BACKLOG_100.md`](docs/BACKLOG_100.md) |
+| **Is this actually a federation — did anything really travel?** | [`pipeline/roundtrip.py`](pipeline/roundtrip.py), and `python -m pipeline.verify` |
 | **Are the shards' pixels and labels actually what they claim?** | [`docs/DATA_VALIDATION.md`](docs/DATA_VALIDATION.md) |
 | **Why is accuracy where it is, and what do the papers say?** | [`docs/findings/2026-09-26-accuracy-findings.md`](docs/findings/2026-09-26-accuracy-findings.md) |
 | **What counts as a result, and when does that number go stale?** | [`docs/NOISE_FLOOR.md`](docs/NOISE_FLOOR.md) |
+| **Who else has built this, and what do we owe them?** | [`docs/RELATED_WORK.md`](docs/RELATED_WORK.md) |
 | How do I run any of it? | [`pipeline/README.md`](pipeline/README.md) |
 | Where did the last session stop? | [`STATUS.md`](STATUS.md) and `docs/prompts/` |
 
@@ -57,7 +59,8 @@ Open the one file that owns the thing. Do not read the package to find it.
 | Shard assignment, conditions, partitioning, quantity skew | `pipeline/vehicles.py` |
 | What a log line means | `pipeline/logparse.py` |
 | Where a round's seconds went | `pipeline/profile.py` |
-| The four pass criteria | `pipeline/verify.py` |
+| The five pass criteria | `pipeline/verify.py` |
+| **Whether the weights really made the round trip, and the aggregate is their mean** | `pipeline/roundtrip.py` |
 | The shared holdout, and scoring the global model on it | `pipeline/holdout.py` |
 | The centralised baseline, and the gap to it | `pipeline/baseline.py` |
 | What makes a fleet's shards invalid | `pipeline/validate.py` |
@@ -310,7 +313,8 @@ branch dies.
 ```bash
 python -m pytest my-project/tests -q     # 31 tests
 python -m pytest pipeline/tests -q       # 130 tests
-python -m pipeline.verify                # the four pass criteria against the last run
+python -m pipeline.verify                # the five pass criteria against the last run
+python -m pipeline.roundtrip             # did the weights travel, and is the aggregate their mean
 python -m pipeline.holdout --evaluate    # the global model on data no vehicle saw
 ```
 
