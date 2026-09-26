@@ -478,7 +478,7 @@ def test_every_file_the_dashboard_imports_is_servable():
             assert (server.STATIC / "js" / imported).is_file(), f"{js.name} imports missing {imported}"
 
 
-def _run_js_check(tmp_path, name: str) -> None:
+def _run_js_check(tmp_path, name: str, extra: dict[str, str] | None = None) -> None:
     """Run one of `pipeline/tests/js/*.mjs` against the real dashboard modules.
 
     The dashboard is served as plain files with no build step, so there is no JS test
@@ -498,6 +498,10 @@ def _run_js_check(tmp_path, name: str) -> None:
     shutil.copytree(server.STATIC / "js", work)
     (work / "package.json").write_text('{"type":"module"}')
     shutil.copy(Path(__file__).parent / "js" / name, work / name)
+    # Fixtures a check needs beside itself. Written by the test rather than committed
+    # when the whole point is that the *Python* half produced them.
+    for fname, text in (extra or {}).items():
+        (work / fname).write_text(text, encoding="utf-8")
 
     # console.assert writes to stderr and does NOT set the exit code, so an assertion
     # that fires would otherwise pass silently -- the exact class of bug this repo
@@ -2250,3 +2254,207 @@ def test_the_profiler_says_which_lever_the_measurement_points_at():
     concurrent_overhead = {"episodes": 6, "max_concurrent": 3, "train_share": 0.40}
     lines = " ".join(_profile.verdict(concurrent_overhead))
     assert "CONCURRENT" in lines and "AROUND-TRAINING" in lines
+
+
+# ----------------------------------------------------- pushed state, not polled
+from pipeline import statestream as _stream  # noqa: E402
+
+#: One run's worth of snapshots, shaped like `/api/state`: a list that grows, a nested
+#: number that moves, a key that appears and then vanishes, and a value that goes null.
+#: Every awkward case here is one the diff has to survive, not one it happens to meet.
+SNAPSHOT_STEPS = [
+    {"busy": False, "current": None, "fleet": [],
+     "live": {"checksums": [], "rounds_done": 0, "training_now": None},
+     "gpu": {"util_pct": None, "history": []}},
+    {"busy": True, "current": "fleet", "fleet": [{"vid": 1, "condition": "night"}],
+     "live": {"checksums": [], "rounds_done": 0, "training_now": None},
+     "gpu": {"util_pct": 4, "history": [{"util": 4}]}},
+    {"busy": True, "current": "federate", "fleet": [{"vid": 1, "condition": "night"}],
+     "live": {"checksums": [-1032.5395936965942], "rounds_done": 1, "training_now": "1"},
+     "gpu": {"util_pct": 27, "history": [{"util": 4}, {"util": 27}]}},
+    {"busy": True, "current": "federate", "fleet": [{"vid": 1, "condition": "night"}],
+     "live": {"checksums": [-1032.5395936965942, -2646.913425683975], "rounds_done": 2,
+              "training_now": "1", "no_optimizer_steps": 0},
+     "gpu": {"util_pct": 31, "history": [{"util": 4}, {"util": 27}, {"util": 31}]}},
+    {"busy": False, "current": None, "fleet": [{"vid": 1, "condition": "night"}],
+     "live": {"checksums": [-1032.5395936965942, -2646.913425683975], "rounds_done": 2,
+              "training_now": None},
+     "gpu": {"util_pct": None, "history": [{"util": 4}, {"util": 27}, {"util": 31}]}},
+]
+
+
+def _replay(steps):
+    """(frames, final) -- what the wire carried and what the client ended up holding."""
+    seq, client, frames = _stream.Sequence(), None, []
+    for i, step in enumerate(steps):
+        raw = seq.open(step) if i == 0 else seq.update(step)
+        if raw is None:
+            continue
+        payload = json.loads(raw.decode().split("data: ", 1)[1])
+        if "state" in payload:
+            client = payload["state"]
+        else:
+            client = _stream.apply(client, payload["patch"])
+            frames.append({"seq": payload["seq"], "patch": payload["patch"], "step": i})
+        assert client == step, f"step {i}: the client holds {client}, not {step}"
+    return frames, client
+
+
+def test_a_state_patch_never_drops_a_change():
+    """The failure this guards is the quiet one.
+
+    A diff that misses a key still produces a well-formed stream; the browser just
+    renders a stale number and keeps looking live. That is every entry in this repo's
+    silent-failures table, moved into the transport. So the client's copy is compared
+    against the server's snapshot after *every* frame, not only at the end.
+    """
+    frames, client = _replay(SNAPSHOT_STEPS)
+    assert client == SNAPSHOT_STEPS[-1]
+    assert [f["seq"] for f in frames] == list(range(1, len(frames) + 1)), "sequence must be dense"
+    assert len(frames) == len(SNAPSHOT_STEPS) - 1
+
+
+def test_a_patch_carries_only_what_moved():
+    """The whole reason for the diff: an unchanged subtree must not be on the wire."""
+    seq = _stream.Sequence()
+    seq.open(SNAPSHOT_STEPS[1])
+    payload = json.loads(seq.update(SNAPSHOT_STEPS[2]).decode().split("data: ", 1)[1])
+    moved = payload["patch"][1]
+    assert set(moved) == {"current", "live", "gpu"}, moved
+    assert "fleet" not in moved and "busy" not in moved
+    # And inside `live`, only the three fields that actually changed.
+    assert set(moved["live"][1]) == {"checksums", "rounds_done", "training_now"}
+
+
+def test_an_unchanged_snapshot_costs_nothing_on_the_wire():
+    """An idle server used to ship the whole fleet, stage table and metrics every 2 s."""
+    seq = _stream.Sequence()
+    seq.open(SNAPSHOT_STEPS[0])
+    same = json.loads(json.dumps(SNAPSHOT_STEPS[0]))    # equal, not identical
+    assert seq.update(same) is None
+    assert seq.seq == 0, "an empty diff must not burn a sequence number"
+
+
+def test_skipping_a_patch_corrupts_the_state_so_the_guard_has_teeth():
+    """If dropping a frame were harmless, every assertion above would prove nothing."""
+    frames, _ = _replay(SNAPSHOT_STEPS)
+    broken = SNAPSHOT_STEPS[0]
+    for f in frames[1:]:                                # frame 1 deliberately lost
+        broken = _stream.apply(broken, f["patch"])
+    assert broken != SNAPSHOT_STEPS[-1]
+
+
+def test_the_browser_applies_the_patches_the_server_produced(tmp_path):
+    """Two implementations of one wire format, checked against each other.
+
+    stream.js re-implements `statestream.apply` because the browser has to. Nothing
+    but this stops the two drifting, and a drift shows up as a panel that is subtly
+    and permanently out of date.
+    """
+    frames, _ = _replay(SNAPSHOT_STEPS)
+    fixture = json.dumps({"steps": SNAPSHOT_STEPS, "frames": frames})
+    _run_js_check(tmp_path, "state_patch.mjs", extra={"patches.json": fixture})
+
+
+def test_statestream_self_check():
+    _stream.demo()
+
+
+def _read_frame(resp, tries: int = 400):
+    """The next real SSE frame, skipping the keep-alive comments."""
+    event, data = "message", None
+    for _ in range(tries):
+        line = resp.readline().decode()
+        if line in ("", "\n", "\r\n"):
+            if data is not None:
+                return event, json.loads(data)
+            continue                                    # blank after a ping
+        if line.startswith(":"):
+            continue
+        if line.startswith("event:"):
+            event = line[6:].strip()
+        elif line.startswith("data:"):
+            data = line[5:].strip()
+    raise AssertionError("no SSE frame arrived")
+
+
+def _serve(monkeypatch, fake):
+    """A real server on an ephemeral port, its snapshot replaced by `fake`."""
+    import threading as _t
+    from http.server import ThreadingHTTPServer
+
+    from pipeline import server as srv
+
+    monkeypatch.setattr(srv.STATE, "snapshot", lambda cfg: json.loads(json.dumps(fake)))
+    srv.STATE._snap, srv.STATE._snap_at = None, 0.0
+    httpd = ThreadingHTTPServer(("127.0.0.1", 0), srv.Handler)
+    _t.Thread(target=httpd.serve_forever, daemon=True).start()
+    return srv, httpd
+
+
+def test_the_state_stream_sends_a_snapshot_then_numbered_diffs(monkeypatch):
+    """The route itself, over a real socket. Reading the code is not evidence."""
+    import http.client
+
+    fake = {"busy": False, "current": None, "fleet": [{"vid": 1}],
+            "live": {"checksums": [], "rounds_done": 0}}
+    srv, httpd = _serve(monkeypatch, fake)
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", httpd.server_address[1], timeout=10)
+        conn.request("GET", "/api/stream")
+        resp = conn.getresponse()
+        assert resp.status == 200
+        assert resp.headers["Content-Type"] == "text/event-stream"
+
+        kind, payload = _read_frame(resp)
+        assert kind == "snapshot" and payload["seq"] == 0
+        assert payload["state"] == fake
+        client = payload["state"]
+
+        fake["live"]["checksums"] = [-1032.5395936965942]
+        fake["live"]["rounds_done"] = 1
+        srv.STATE._snap_at = 0.0                        # let the cache see the change
+        # A bus event is what wakes the loop in a real run; without one the patch would
+        # still arrive, just a STREAM_TICK later.
+        srv.STATE.bus.publish({"kind": "signal", "signal": "aggregate_checksum",
+                               "value": -1032.5395936965942})
+
+        kind, payload = _read_frame(resp)
+        assert kind == "patch" and payload["seq"] == 1
+        assert set(payload["patch"][1]) == {"live"}, "the fleet did not move; do not send it"
+        assert _stream.apply(client, payload["patch"]) == fake
+        conn.close()
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+
+
+def test_api_state_still_answers_for_anything_that_wants_the_whole_thing(monkeypatch):
+    """The stream is an optimisation. Removing the route it optimises would make a CLI
+    user's `curl /api/state` -- and stream.js's own resync path -- silently 404."""
+    import http.client
+
+    fake = {"busy": False, "live": {"checksums": [1.0]}}
+    _, httpd = _serve(monkeypatch, fake)
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", httpd.server_address[1], timeout=10)
+        conn.request("GET", "/api/state")
+        assert json.loads(conn.getresponse().read()) == fake
+        conn.close()
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+
+
+def test_one_snapshot_serves_every_watcher(monkeypatch):
+    """The push loop asks for state far more often than the old poll did. If each ask
+    re-read every client log, the holdout curve and the baseline, watching the page
+    would cost more than running it."""
+    from pipeline import server as srv
+
+    calls = []
+    monkeypatch.setattr(srv.STATE, "snapshot", lambda cfg: calls.append(1) or {"n": len(calls)})
+    srv.STATE._snap, srv.STATE._snap_at = None, 0.0
+    for _ in range(20):
+        srv.STATE.current(Config())
+    assert len(calls) == 1, f"recomputed {len(calls)} times inside one TTL"

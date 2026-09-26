@@ -6,34 +6,43 @@ import { renderStages, renderOptions } from "./control.js";
 import { renderFleet } from "./fleet.js";
 import { renderNowTraining } from "./consumed.js";
 
-const POLL_MS = 2000;
+//: The trainer's own pictures cost an /api/train-artifacts round trip and a directory
+//: listing, so they are not re-read at the rate state now arrives. A vehicle change
+//: refreshes them immediately; otherwise this is the ceiling.
+const ARTIFACT_MS = 2000;
+let artifactsAt = 0;
+let artifactsKey = "";
 
-export async function poll() {
-  try {
-    const s = await (await fetch("/api/state")).json();
-    $("skew").hidden = !!s.live;
-    state.cfg = s.config || {};
-    state.fleet = s.fleet || [];
-    state.learning = s.live && s.live.learning;
-    renderStages(s.stages);
-    renderOptions(s.options);
-    renderGpu(s.gpu);
-    renderLive(s.live, s.config);
-    renderNowTraining($("nowTraining"), s.live && s.live.training_now,
-                      nowLabel(s), s.busy);
-    renderReports(s.reports);
-    renderFleet();
-    document.body.dataset.loaded = "1";
-    $("runState").textContent = s.busy ? (s.current || "running") : "idle";
-    $("runState").className = "lamp " + (s.busy ? "l-run" : "l-idle");
-    $("launch").disabled = s.busy;
-    $("stop").disabled = !s.busy;
-    $("mlflowLink").href = s.links.mlflow;
-    $("rayLink").href = s.links.ray;
-  } catch {
-    /* the server is restarting; the next tick catches up */
+/** Render one whole state snapshot. Called by the stream on every push. */
+export function applyState(s) {
+  if (!s) return;
+  $("skew").hidden = !!s.live;
+  state.cfg = s.config || {};
+  state.fleet = s.fleet || [];
+  state.learning = s.live && s.live.learning;
+  renderStages(s.stages);
+  renderOptions(s.options);
+  renderGpu(s.gpu);
+  renderLive(s.live, s.config);
+
+  const key = `${s.live && s.live.training_now}|${s.busy}`;
+  if (key !== artifactsKey || Date.now() - artifactsAt > ARTIFACT_MS) {
+    artifactsKey = key;
+    artifactsAt = Date.now();
+    renderNowTraining($("nowTraining"), s.live && s.live.training_now, nowLabel(s), s.busy);
+  } else {
+    nowLabel(s);
   }
-  setTimeout(poll, POLL_MS);
+
+  renderReports(s.reports);
+  renderFleet();
+  document.body.dataset.loaded = "1";
+  $("runState").textContent = s.busy ? (s.current || "running") : "idle";
+  $("runState").className = "lamp " + (s.busy ? "l-run" : "l-idle");
+  $("launch").disabled = s.busy;
+  $("stop").disabled = !s.busy;
+  $("mlflowLink").href = s.links.mlflow;
+  $("rayLink").href = s.links.ray;
 }
 
 /** "vehicle 3 · rain / fog", and the same string into the panel's own subtitle. */

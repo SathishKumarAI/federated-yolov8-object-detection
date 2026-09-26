@@ -1,9 +1,10 @@
 // Entry point: wires the tabs, the control form, the chart cursor, and starts
-// the two data sources (polling for state, SSE for the log).
+// the two data sources (one SSE stream for state diffs, one for the run log).
 import { $ } from "./util.js";
 import { enableChartCursor } from "./chart.js";
 import { wireControl } from "./control.js";
-import { poll, connectEvents, drawHeartbeat } from "./live.js";
+import { applyState, connectEvents, drawHeartbeat } from "./live.js";
+import { connectState } from "./stream.js";
 import { renderFleet } from "./fleet.js";
 import { loadData } from "./data.js";
 import { loadPlan } from "./plan.js";
@@ -32,7 +33,9 @@ document.querySelectorAll(".tab").forEach(t => { t.onclick = () => showView(t); 
 wireControl(() => showView(document.querySelector('.tab[data-view=live]')));
 enableChartCursor();
 connectEvents();
-poll();
+// State arrives as a snapshot then numbered diffs; polling is only the fallback
+// stream.js falls back to when /api/stream never connects.
+connectState(applyState);
 // Its own loop, not part of poll(): edge nodes are live whether or not a federation
 // is running, and /api/nodes must not be coupled to the run-state snapshot.
 pollEdge();

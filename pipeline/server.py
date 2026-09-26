@@ -15,6 +15,7 @@ from __future__ import annotations
 import base64
 import binascii
 import json
+import socket
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -23,13 +24,22 @@ from pathlib import Path
 from urllib.parse import unquote
 
 from . import (baseline, dataset_stats, docs_index, gpu, holdout, ledger, logparse,
-               nodes, paths, plan, stages, train_artifacts, vehicle_metrics, vehicles,
-               verify)
+               nodes, paths, plan, stages, statestream, train_artifacts,
+               vehicle_metrics, vehicles, verify)
 from .runner import Run
 from .stages import Config
 
 STATIC = Path(__file__).resolve().parent / "static"
 HISTORY_LIMIT = 500
+
+#: How stale the shared snapshot may be. One snapshot serves every open tab and both
+#: `/api/state` and `/api/stream`, so this is the whole cost of the push loop -- it is
+#: not multiplied by the number of browsers watching.
+SNAPSHOT_TTL = 0.35
+#: Longest a stream sits idle before it sends a keep-alive. A bus event (a log line, a
+#: stage transition, a checksum) wakes it sooner, so this is the ceiling on latency for
+#: things that leave no trace on the bus -- the GPU sampler, mostly.
+STREAM_TICK = 1.0
 
 
 def safe_child(root: Path, rel: str) -> Path | None:
@@ -52,13 +62,27 @@ class Broadcaster:
         self.subscribers: list["list"] = []
         self.history: list[dict] = []
         self.lock = threading.Lock()
+        # Bumped whenever anything happens, so a state stream can wait on real events
+        # instead of spinning on a timer. A revision counter rather than an Event:
+        # with an Event, the first waiter to clear it steals the wake-up from every
+        # other open tab, and the second tab would lag by a whole STREAM_TICK.
+        self.revision = 0
+        self.changed = threading.Condition(self.lock)
 
     def publish(self, ev: dict) -> None:
-        with self.lock:
+        with self.changed:
             self.history.append(ev)
             del self.history[:-HISTORY_LIMIT]
             for q in self.subscribers:
                 q.append(ev)
+            self.revision += 1
+            self.changed.notify_all()
+
+    def wait(self, seen: int, timeout: float) -> int:
+        """Block until the revision moves past ``seen``, or ``timeout``. Returns it."""
+        with self.changed:
+            self.changed.wait_for(lambda: self.revision != seen, timeout)
+            return self.revision
 
     def subscribe(self) -> list:
         q: list = []
@@ -80,6 +104,9 @@ class State:
         self.run: Run | None = None
         self.thread: threading.Thread | None = None
         self.idle_sampler = gpu.Sampler(interval=3.0).start()
+        self._snap: dict | None = None
+        self._snap_at = 0.0
+        self._snap_lock = threading.Lock()
 
     @property
     def busy(self) -> bool:
@@ -196,6 +223,22 @@ class State:
             "reports": self.reports(),
         }
 
+    def current(self, cfg: Config) -> dict:
+        """The snapshot, recomputed at most every SNAPSHOT_TTL seconds.
+
+        Shared, and the sharing is the point: `snapshot()` reads every client log, the
+        metrics CSV, the holdout curve and the baseline off disk, and the push loop
+        below asks for it far more often than the old two-second poll did. One tab or
+        five, that work happens once. Callers get the *same object* back within the
+        TTL, which is also how a stream recognises "nothing to send" for free.
+        """
+        with self._snap_lock:
+            now = time.monotonic()
+            if self._snap is None or now - self._snap_at > SNAPSHOT_TTL:
+                self._snap = self.snapshot(cfg)
+                self._snap_at = now
+            return self._snap
+
 
 STATE = State()
 CONFIG = Config()
@@ -223,7 +266,11 @@ class Handler(BaseHTTPRequestHandler):
         if self.path in ("/", "/index.html"):
             return self._send(200, (STATIC / "index.html").read_bytes(), "text/html; charset=utf-8")
         if self.path == "/api/state":
-            return self._json(STATE.snapshot(CONFIG))
+            # Kept as the whole truth, and as what a stream falls back to: the browser
+            # refetches it if a sequence number ever skips.
+            return self._json(STATE.current(CONFIG))
+        if self.path == "/api/stream":
+            return self._state_stream()
         if self.path == "/api/events":
             return self._sse()
         if self.path.startswith("/static/"):
@@ -405,6 +452,46 @@ class Handler(BaseHTTPRequestHandler):
     def _event(self, ev: dict) -> None:
         self.wfile.write(f"data: {json.dumps(ev)}\n\n".encode())
         self.wfile.flush()
+
+    def _state_stream(self) -> None:
+        """Push `/api/state` as a full snapshot then a numbered stream of diffs.
+
+        Separate from `/api/events` rather than multiplexed onto it, because the two
+        have opposite shapes: the event bus is an append-only narration that must be
+        replayed to a late tab, and this is one value whose *history is worthless* --
+        a tab that connects now wants the state now, not every intermediate.
+
+        Latency comes from the bus: a log line, a stage transition or a checksum wakes
+        this loop immediately. STREAM_TICK is the ceiling for the things that leave no
+        event behind, and an unchanged tick sends a comment frame, not a payload.
+        """
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Connection", "keep-alive")
+        # Nagle would hold a small frame waiting for the next one, which is precisely
+        # the latency this route exists to remove.
+        try:
+            self.connection.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        except OSError:
+            pass
+        self.end_headers()
+
+        seq = statestream.Sequence()
+        seen = STATE.bus.revision
+        try:
+            self.wfile.write(seq.open(STATE.current(CONFIG)))
+            self.wfile.flush()
+            while True:
+                seen = STATE.bus.wait(seen, STREAM_TICK)
+                payload = seq.update(STATE.current(CONFIG))
+                # The comment frame is the keep-alive AND the liveness probe: writing
+                # to a browser that has gone away raises, which is the only way this
+                # thread learns to exit.
+                self.wfile.write(payload if payload is not None else b": ping\n\n")
+                self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            pass
 
     #: Ceiling on a request body. Every other POST here is a small JSON config; the
     #: node heartbeat carries a base64 JPEG, which is the only reason this is not tiny.
