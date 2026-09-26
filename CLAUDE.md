@@ -19,6 +19,9 @@ whole flow and visualises a simulated vehicle fleet while it runs.
 | **What does Flower × YOLO actually need, measured?** | [`docs/FEDERATED_DETECTION.md`](docs/FEDERATED_DETECTION.md) |
 | How do I run the model live on other machines? | [`docs/REALTIME_NODES.md`](docs/REALTIME_NODES.md) |
 | What should I build? | [`docs/BACKLOG_100.md`](docs/BACKLOG_100.md) |
+| **Are the shards' pixels and labels actually what they claim?** | [`docs/DATA_VALIDATION.md`](docs/DATA_VALIDATION.md) |
+| **Why is accuracy where it is, and what do the papers say?** | [`docs/findings/2026-09-26-accuracy-findings.md`](docs/findings/2026-09-26-accuracy-findings.md) |
+| **What counts as a result, and when does that number go stale?** | [`docs/NOISE_FLOOR.md`](docs/NOISE_FLOOR.md) |
 | How do I run any of it? | [`pipeline/README.md`](pipeline/README.md) |
 | Where did the last session stop? | [`STATUS.md`](STATUS.md) and `docs/prompts/` |
 
@@ -30,11 +33,21 @@ Open the one file that owns the thing. Do not read the package to find it.
 |---|---|
 | A dashboard panel's look, or any colour, spacing, type | `pipeline/static/app.css` |
 | Dashboard markup, a new panel, an element id | `pipeline/static/index.html` |
-| Chart axes, ticks, tooltips, sparkline | `pipeline/static/js/chart.js` |
+| Chart axes, ticks, tooltips, sparkline, the noise band | `pipeline/static/js/chart.js` |
+| How state reaches the browser, and the polling fallback | `pipeline/static/js/stream.js` |
+| Checksum ledger, per-class small multiples, round profile, provenance | `pipeline/static/js/insight.js` |
+| The projection form | `pipeline/static/js/simulate.js` |
+| The demo/help walkthrough and its steps | `pipeline/static/js/tour.js` |
+| A run lever's caveat, or which levers the form offers | `pipeline/measurements.py` `LEVER_NOTES`, `pipeline/server.py` `LEVERS` |
 | The fleet grid / vehicle drawer / live polling / run form | `pipeline/static/js/{fleet,drawer,live,control}.js` |
 | Label boxes drawn over a frame, the trainer's own pictures | `pipeline/static/js/consumed.js` |
 | Which of ultralytics' output pictures are served, and their captions | `pipeline/train_artifacts.py` — `KINDS` |
 | An HTTP route or what `/api/state` returns | `pipeline/server.py` |
+| Real SuperLink/SuperNode processes instead of the simulator | `pipeline/deploy.py` |
+| The state push: the diff format, the sequence, the SSE frames | `pipeline/statestream.py` |
+| **A measured number the UI quotes, or its provenance** | `pipeline/measurements.py` — nowhere else |
+| What the demo/help walkthrough replays, and what it admits it lacks | `pipeline/demo_run.py` |
+| What a configuration would cost, and what it refuses to project | `pipeline/plan.py` |
 | The live edge fleet: what a node may report, and its bounds | `pipeline/nodes.py` |
 | The edge node itself — camera, inference, heartbeat | `pipeline/edge.py` |
 | The live-nodes panel | `pipeline/static/js/edge.js` |
@@ -48,6 +61,7 @@ Open the one file that owns the thing. Do not read the package to find it.
 | The shared holdout, and scoring the global model on it | `pipeline/holdout.py` |
 | The centralised baseline, and the gap to it | `pipeline/baseline.py` |
 | What makes a fleet's shards invalid | `pipeline/validate.py` |
+| Decoding sampled images and checking their labels against BDD's own JSON | `pipeline/spotcheck.py` |
 | Comparing runs to each other | `pipeline/compare.py` |
 | Running a set of configurations and tabling them | `pipeline/experiment.py` |
 | The human-facing runbook | `docs/RUNBOOK.md`, `scripts/run_pipeline.{ps1,sh}` |
@@ -56,6 +70,7 @@ Open the one file that owns the thing. Do not read the package to find it.
 | ⚠ Aggregation strategy — **different branch and prompt** | `my-project/my_project/server_app.py` |
 | ⚠ Client training loop, checksums it logs — **ditto** | `my-project/my_project/client_app.py` |
 | ⚠ Data yaml, batch path resolution, model loading — **ditto** | `my-project/my_project/task.py` |
+| ⚠ What happens *inside* a round — FixBN, and per-step FedProx when it lands | `my-project/my_project/trainers.py` |
 
 Full dashboard map, including the rules that keep it split:
 [`pipeline/static/README.md`](pipeline/static/README.md).
@@ -119,9 +134,12 @@ Read these before assuming a green run means a working one.
 | B7 | federation ran to completion | checkpointing silently skipped every round |
 | — | run succeeded, checksums identical | shard too small for the batch size: **no optimizer step happened at all** |
 | — | `metrics.csv` showed 6 308 examples | only 10 images existed; `num_examples` is FedAvg's weight |
+| — | rounds completed, checksums changed every round | clients sent the **fp16-rounded EMA of `best.pt`**, not the weights they trained. `YOLO.train()` rebinds `yolo.model` to a reloaded checkpoint, and the checkpoint holds only `deepcopy(ema).half()`. Measured: 355/355 tensors leaving the client were exactly fp16-representable, against 58/355 in the live model |
 
 **The single most useful signal is the round-over-round aggregate checksum.** Equal
-consecutive values mean nothing is being learned, whatever the metrics say.
+consecutive values mean nothing is being learned, whatever the metrics say. It has a
+blind spot, found 2026-09-26: it proves *something* changed, never that the *right
+tensors* travelled. The fp16-EMA transport bug above moved the checksum every round.
 
 ## Facts about the training stack, measured 2026-08-16
 
@@ -141,7 +159,7 @@ to be wrong quietly.
 | 8 | Peak VRAM at 1 400 images/vehicle is **5 087 MiB of 16 303**, with `num-gpus = 1.0` | clients are serialised on a card that fits three of them |
 | 9 | The 13-class head **was random**; COCO transfers only the backbone. Now warm-started for 9 of 13 classes (`warm_start_head`) | untrained holdout mAP50 went **0.0053 → 0.2582**. And it exposed the next problem: round 1 *costs* the warm model 0.066 mAP50 — at 5.88e-4, not at the `lr0` the old note named |
 | 10 | `get_weights` sends the **full `state_dict`**, so FedAvg averages BatchNorm running stats across weather conditions | correct for IID clients; this fleet is partitioned by *condition*, which is feature shift — exactly what BN buffers encode. See FedBN in [`docs/FEDERATED_DETECTION.md`](docs/FEDERATED_DETECTION.md) |
-| 11 | Observed run-to-run spread is **≥ ±0.016 mAP50** (a 1.667×-budget ceiling scored *lower* than a smaller one) | any delta under that is not a result. Measure the spread before ranking anything |
+| 11 | **Measured seed spread is ±0.0018 mAP50** (n=3, max−min 0.0036, stdev 0.0019; IID, 2 rounds × 1 epoch, same holdout in every arm) | the old **±0.016** was inferred from a *centralised* ceiling anomaly across two different data volumes — never a seed spread, and 8.9× too loose. It has been dismissing real differences, including FedBN's +0.0040. n=3 under-reports, so treat ±0.0018 as a **lower bound**, and re-measure at 6 × 4 non-IID before trusting it there |
 
 **And a measurement trap, learned here.** A first `train()` in a process pays CUDA
 context + cuDNN autotune + the AMP check: 34.6 s against 27.1 s warm. Benchmarking arms
@@ -218,7 +236,7 @@ a host. This is the path off the simulation engine and onto real machines.
 | version | change | why it matters here |
 |---|---|---|
 | **8.4.130** | tuning's default optimizer changed to **AdamW**, explicitly *"to ensure tuning parameters such as learning rate and momentum actually affect training"* | **upstream hit fact 1 and fixed it in their tuner.** Independent confirmation that `optimizer="auto"` silently discarding `lr0` is a real trap and not a misreading. The trainer default is unchanged, so this repo still must pass `optimizer` explicitly |
-| **8.4.137** | channels-last CUDA training auto-enabled on torch ≥1.11 | a free speed lever. 8.4.115's argument dump shows `channels_last=False`, so this repo is not getting it |
+| **8.4.137** | channels-last CUDA training auto-enabled on torch ≥1.11 | **no upgrade needed to try it.** 8.4.115 already has the `channels_last` argument, defaulting to `False`; 8.4.137 only flips the default. So it is reachable today as `channels_last=True`. Untested here, and it is not free of risk: it changes tensor memory format, and `get_weights` serialises the whole `state_dict` — the transport that produced the B4 bug. Measure the aggregate checksum, not just the wall clock. Ultralytics does serialise checkpoints as NCHW regardless, so saved weights are unaffected |
 | **8.4.129** | BF16 mixed precision (`amp="bf16"`) | Blackwell has the hardware; untested here |
 | **8.4.131** | validation forced onto the **unaugmented** pipeline when `split=train` | a correctness fix in the evaluation path this project reports from |
 | **8.4.135** | `max_det` auto-matched to dataset object counts | BDD frames are crowded — `max_det=300` is a live ceiling at this scale, worth checking before it silently truncates |
@@ -233,6 +251,18 @@ of them. Re-run the probes before believing them on 8.4.138.
 
 - Use the venv on **python.org 3.12**, not conda: Smart App Control blocks
   conda-forge's `_bz2.pyd`. See `docs/ENV_WINDOWS.md`.
+- **Never kill python by image name.** `taskkill /F /IM python.exe` matches every
+  `python.exe` on the machine. One agent clearing a stale dashboard server that way killed
+  a live `flwr run` in another session mid-round, and the only trace it left was a raylet
+  `Windows fatal exception: access violation` -- which reads like a Ray bug and was written
+  up as one before the real cause surfaced. Kill by PID. Matters whenever two sessions
+  share this machine, which is now normal.
+- **Windows Application Control blocks `Scripts\flwr.exe`**, measured 2026-09-26: a run
+  halted at the federate stage with `[WinError 4551] An Application Control policy has
+  blocked this file`. A console script is an unsigned .exe generated on this machine,
+  which is what those policies stop — the same mechanism that makes conda unusable here.
+  `stages.flwr_launcher()` therefore returns `python -c "from flwr.cli.app import app;
+  app()"`, which is what the shim wraps. Do not "fix" this back to the .exe.
 - Export `FLWR_DISABLE_RUNTIME_DEPENDENCY_INSTALLATION=1` before `flwr run`, or flwr
   builds its own runtime env with the CPU-only torch wheel and every client trains on
   CPU at ~5.5x wall clock, silently.
@@ -254,9 +284,13 @@ of them. Re-run the probes before believing them on 8.4.138.
   memory, use **0.5** (two clients, still 1.50×). The pipeline halted correctly rather
   than reporting a short run as a finished one: Ray exits **0** after an actor dies, and
   the runner's output inspection is the only thing that catches it.
-- Condition partitioning is only real while the condition has images: `overcast
-  residential` has 1 419 in all of BDD100K. Asking for more per vehicle silently tops up
-  with random images and turns a non-IID run into a nearly-IID one. `--size-skew`
+- Condition partitioning is only real while the condition has images, and the number
+  that decides a shard is the **locally reachable** one, not BDD100K's: `overcast
+  residential` has 1 419 in all of BDD100K but **685** in the pool on this machine, and
+  `parking / tunnel` has **319**. At 1 400 per vehicle those two profiles are 51 % and
+  77 % random top-up — measured, see
+  [`docs/DATA_VALIDATION.md`](docs/DATA_VALIDATION.md). Asking for more per vehicle
+  silently tops up with random images and turns a non-IID run into a nearly-IID one. `--size-skew`
   sharpens this: the fleet total is preserved, so a large skew hands one vehicle several
   times `per_vehicle` and that vehicle is the one whose condition runs dry first.
 

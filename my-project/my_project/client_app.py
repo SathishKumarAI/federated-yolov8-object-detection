@@ -21,6 +21,7 @@ from my_project.task import (
 import urllib
 from my_project.get_set_model import (NUM_CLASSES_MODEL_YAML, batchnorm_keys, get_weights,
                                       set_weights, warm_start_head)
+from my_project.trainers import fixbn_trainer
 from utils.logging_setup import configure_logging
 
 warnings.filterwarnings("ignore", category=DeprecationWarning)
@@ -113,6 +114,39 @@ class FlowerClient(Client):
         """
         return self.yolo.model if self.yolo is not None else None
 
+    @property
+    def trained_model(self):
+        """The module the optimizer actually stepped -- what FedAvg must average.
+
+        ``model`` above is the right thing to *receive* into and the wrong thing to
+        *send*. Ultralytics' rebind at the end of ``train()`` does not hand back the
+        trained module; it reloads a checkpoint (``engine/model.py:828``), and the
+        checkpoint holds only ``deepcopy(ema).half()`` -- ``"model"`` is written as
+        ``None`` (``engine/trainer.py:725,740``) and the loader prefers ``ckpt["ema"]``
+        (``nn/tasks.py:1899``). Measured on one epoch of batch_1: 355 of 355 tensors
+        reaching ``get_weights`` were exactly fp16-representable against 58 of 355 in
+        the live model, which is the ``.half().float()`` signature, and every BN
+        ``num_batches_tracked`` arrived as 0 because ``ModelEMA.update`` lerps only
+        floating-point tensors.
+
+        So three things rode on that rebind: the fp16 round-trip, an EMA nobody asked
+        for whose ``updates`` counter restarts at 0 every round, and -- at
+        ``local_epochs > 1`` -- ``best.pt``'s own choice of epoch, scored on this
+        vehicle's 280-image val split. Reading the trainer's module removes all three
+        at the send site and changes nothing about what is received.
+
+        Falls back to ``model`` before any ``train()`` has run, and says so: a silent
+        fallback here would look exactly like the fix working.
+        """
+        trainer = getattr(self.yolo, "trainer", None) if self.yolo is not None else None
+        module = getattr(trainer, "model", None)
+        if module is None:
+            logger.warning(
+                "[Client] No trainer module available; sending yolo.model instead. "
+                "After a train() that is the reloaded fp16 EMA of best.pt, not the "
+                "weights this round produced.")
+            return self.model
+        return module
 
     def _validate_batch_id(self, batch_id: int) -> bool:
         """Validate that batch_id is within the acceptable range."""
@@ -193,6 +227,17 @@ class FlowerClient(Client):
         optimizer = str(ins.config.get("optimizer", "auto"))
         lr0 = float(ins.config.get("lr0", 0.0))
         mosaic = float(ins.config.get("mosaic", -1.0))   # negative = leave the default
+        # How many leading layers to freeze THIS round. The server sends a non-zero
+        # value on round 1 only, so the head can settle against features the backbone
+        # already had rather than pulling them apart. 0 = train everything.
+        freeze = int(ins.config.get("freeze", 0))
+        # FixBN: normalise with the aggregate's statistics and stop them moving.
+        # The server decides which rounds, because the warm-up phase is the method.
+        fix_bn = bool(ins.config.get("fix_bn", False))
+        # Input resolution for this round. BDD frames are 1280x720; at 640 the small
+        # classes are sub-20px. The holdout and the baseline are scored at the same
+        # size by the pipeline, so this does not quietly become an unfair win.
+        imgsz = int(ins.config.get("imgsz", DEFAULT_IMAGE_SIZE))
 
         # `optimizer="auto"` REPLACES lr0 with 0.002*5/(4+nc) and logs that it did, in
         # a line nobody read. Passing lr0 while leaving the optimizer on auto is a
@@ -245,7 +290,7 @@ class FlowerClient(Client):
             # shard an entire round can finish without a single step: training
             # "succeeds", metrics are logged, and the returned weights are bit-for-bit
             # what the server sent. Warn rather than fail — a caller may want this.
-            batch = get_optimal_batch_size()
+            batch = get_optimal_batch_size(imgsz)
             n_train = count_shard_examples(self.batch_id, "train")
             steps = math.ceil(n_train / batch) * int(local_epochs)
             accumulate = max(round(NOMINAL_BATCH_SIZE / batch), 1)
@@ -264,11 +309,33 @@ class FlowerClient(Client):
                 tuning["lr0"] = lr0
             if mosaic >= 0:
                 tuning["mosaic"] = mosaic
+            if freeze > 0:
+                # Ultralytics freezes `model.0.`..`model.{freeze-1}.` plus `.dfl`
+                # (engine/trainer.py:330-352) and raises if nothing is left trainable,
+                # so a too-large value fails loudly rather than training nothing. It
+                # also puts those layers' BatchNorm into eval() (trainer.py:701-707), so
+                # the statistics do not drift either: measured at freeze=10, 0 of 54
+                # backbone weights and 0 of 27 backbone running_var changed, against
+                # 66/67 and 30/30 in the head. Round 1 therefore returns a bit-identical
+                # backbone from every vehicle and federates only the head.
+                tuning["freeze"] = freeze
+                logger.info(
+                    f"[Client] Round {ins.config.get('server_round')}: freezing the "
+                    f"first {freeze} layers so the head settles against fixed features.")
+            if fix_bn:
+                # A trainer subclass, not a call before train(): `_model_train` runs
+                # `model.train()` at the start of every epoch, which would undo an
+                # eval() set from out here on the second epoch and leave a warm-up
+                # phase nobody chose inside the round. See my_project/trainers.py.
+                tuning["trainer"] = fixbn_trainer()
+                logger.info(
+                    f"[Client] Round {ins.config.get('server_round')}: FixBN on -- "
+                    f"normalising with the aggregate's statistics, and not moving them.")
 
             results = self.yolo.train(
                 data=data_yaml_path,
                 epochs=local_epochs,
-                imgsz=DEFAULT_IMAGE_SIZE,
+                imgsz=imgsz,
                 device=self.device,
                 batch=batch,
                 verbose=False,
@@ -320,8 +387,23 @@ class FlowerClient(Client):
                 num_examples = 0
                 metrics = {"error": "No metrics returned from training", "os": OS_NAME}
 
-            # 6) Extract updated weights for sending back to server
-            updated_weights = get_weights(self.model)
+            # 6) Extract updated weights for sending back to server.
+            # From the TRAINER's module, not from yolo.model -- see trained_model.
+            updated_weights = get_weights(self.trained_model)
+
+            # Log both, every round. The two numbers differing is the fix working; them
+            # being equal means the trainer was not reachable and the fp16 EMA went out
+            # instead, which is the bug this replaced and must never be silent again.
+            #
+            # Summed straight off the tensors rather than through get_weights: that would
+            # copy all 355 of them to host memory as numpy, ~44 MB per client per round,
+            # to produce one float. A log line is not worth a second serialisation.
+            reloaded_checksum = sum(
+                float(t.sum()) for t in self.model.state_dict().values() if t.numel())
+            trained_checksum = sum(w.sum() for w in updated_weights if w.size > 0)
+            logger.info(
+                f"[Client] trained weights checksum {trained_checksum}; the reloaded "
+                f"best.pt EMA would have sent {reloaded_checksum}")
 
             # FedProx: pull the locally-trained weights back toward the global model
             # by factor mu, i.e. w <- w - mu * (w - w_global). mu == 0 is plain FedAvg.
@@ -429,8 +511,11 @@ class FlowerClient(Client):
         try:
             logger.info(f"[Client] Evaluating with data config: {data_yaml_path}")
             results = self.yolo.val(
+                # The same size the round trained at: `on_evaluate_config_fn` is
+                # `fit_config_fn`, so this dict already carries it. Scoring at 640 a
+                # model trained at 1024 would report a number for neither.
                 data=data_yaml_path,
-                imgsz=DEFAULT_IMAGE_SIZE,
+                imgsz=int(ins.config.get("imgsz", DEFAULT_IMAGE_SIZE)),
                 device=self.device,
                 verbose=False
             )

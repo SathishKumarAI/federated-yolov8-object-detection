@@ -258,7 +258,101 @@ Two things fall out:
 
 ---
 
+## The noise floor, measured at last — and ±0.016 was never it
+
+Phase 3's blocking question, answered 2026-09-02. Three seeds, identical everything
+else, IID fleet, 6 vehicles × 1 400 images, 2 rounds × 1 epoch, **the same 1 000-image
+holdout in every arm** (fingerprint `3af571c2c901`, seed 0 — verified per arm, not
+assumed):
+
+| seed | holdout mAP50 | fleet |
+|---|---|---|
+| 0 | 0.1193 | `35cf9f955aeb` |
+| 1 | 0.1157 | `23215281ddba` |
+| 2 | 0.1186 | `c579060d276f` |
+
+```
+mean       0.1179
+max − min  0.0036        half-range ±0.0018        stdev 0.0019
+assumed    ±0.0160       -> the measured spread is 8.9x tighter
+```
+
+**Where ±0.016 came from, and why it was the wrong instrument.** It was inferred from a
+*centralised* ceiling anomaly: a ceiling trained on 14 000 images for 24 epochs scored
+0.4771 against the 8 400-image ceiling's 0.4936. That is a comparison between two
+different data volumes in a non-federated setting. It was never a seed spread, and it
+has been used as one to dismiss differences for two sessions.
+
+**This re-opens results previously written off**, including one of mine. FedBN measured
+**+0.0040** at round 1 — larger than the 0.0036 max−min — and I recorded it as "no
+measured difference" against the ±0.016 figure. That call rested on the wrong number.
+It is *not* thereby a win: the FedBN arms were one run each, and a single delta at the
+edge of a three-sample range decides nothing. The honest status is **unresolved, and now
+worth the repeats** rather than closed.
+
+### What this spread does and does not cover
+
+- **Three seeds. `max − min` under-reports the true spread**, and badly at n=3. Treat
+  ±0.0018 as a lower bound on the error bar, not the error bar.
+- Measured at **2 rounds × 1 epoch on an IID fleet**. The headline runs 6 × 4 on a
+  condition-partitioned one. Variance is not guaranteed to transfer — non-IID arms have
+  a second source of it in which conditions land where.
+- The seed moves **the fleet and the training randomness together**, which is the right
+  question for "would a rerun agree with me", and the wrong one for separating data
+  variance from optimisation variance.
+- The holdout on disk predates the fingerprint field, so its stored `fingerprint` is
+  null; the value above is computed live from the name list. Rebuilding at the same
+  size and seed is deterministic and would persist it.
+
+## Running it long, and why 40×1 rather than 10×4
+
+The instinct for "a better model" is more rounds and more local epochs. Half of that
+is right here, and the other half is actively wasteful.
+
+`_get_warmup_iterations` clamps warmup to `min(warmup_epochs, epochs - 1)`. At
+`local_epochs = 4` that is **three warmup epochs of four** — every client spends most of
+every round on a ramping learning rate and ends it worse than the aggregate it started
+from, which FedAvg then averages. At `local_epochs = 1` there is **no warmup at all**.
+
+So at a fixed GPU budget, spend it on **rounds, not local epochs**:
+
+| | epochs/round | rounds | warmup waste | aggregation steps |
+|---|---|---|---|---|
+| the old headline | 4 | 6 | 3 of every 4 epochs | 6 |
+| **40 × 1** | 1 | 40 | **none** | **40** |
+
+Same 160 s per round-epoch on this machine, ~1.8 h either way, and the second gives the
+federation 40 chances to aggregate instead of 6. It is also the direction phase 2
+already predicted — fewer local epochs reduce client drift.
+
+**But more rounds is not monotonically better, and this project has measured that
+twice**: the warm-started model scored 0.2582 *untrained* against 0.2073 after two
+rounds, and a 1.667×-budget centralised ceiling scored *lower* than a smaller one. A
+long run can end on a worse model than it passed through.
+
+That is what `python -m pipeline.holdout --evaluate --promote` is for. It reports the
+round the curve peaked at, what the rounds after it cost, and copies the winner to
+`checkpoints/global_best.pt`. **Report the best round, not the last one** — and
+`wasted_rounds` is the number that says what to set `--rounds` to next time.
+
+```bash
+python -m pipeline.runner --all --rounds 40 --epochs 1 --per-vehicle 1400 \
+       --partition random --gpu-fraction 0.5 --skip baseline --yes
+python -m pipeline.holdout --evaluate --promote
+```
+
+One honesty note on the comparison: 6 vehicles × 1400 × 40 rounds × 1 epoch is
+**336 000 image-visits against the headline's 201 600**, so the result is *not*
+budget-matched to the 0.4936 centralised ceiling. Either rerun the ceiling at the
+matching epoch count or state the ratio, exactly as `baseline.parity` already does.
+
 ## What to actually run
+
+> **Updated 2026-09-26.** Items 5b and 6b-6e below were added that day, and the reading
+> that produced them — including the FedAvg-matches-centralised result on this dataset from
+> arXiv:2509.01868 — is in
+> [`docs/findings/2026-09-26-accuracy-findings.md`](findings/2026-09-26-accuracy-findings.md).
+> Every one of them defaults to off.
 
 Ordered by expected value per GPU-hour on this machine, all of it gated behind the
 phase-3 seed spread — nothing below is claimable until a difference bigger than
@@ -272,6 +366,11 @@ phase-3 seed spread — nothing below is claimable until a difference bigger tha
 | 3 | Server-driven `lr0` + `warmup_epochs`, broadcast per round | `server_app.py` + `client_app.py` ⚠ | small | safe to share one `FitIns`: the schedule is global, unlike the B9 `batch_id`. Attacks the 0.066 mAP50 round-1 loss |
 | 4 | `mosaic` and `erasing` as run-config keys | `client_app.py` ⚠ | small | 30 % of the dataloader, and the dataloader is the bottleneck. Changes the data path, so holdout-gated |
 | 5 | **FedBN** — BN tensors stay local | `get_set_model.py` + strategy ⚠ | medium | the only technique here aimed at *feature-shift* non-IID, which is the axis this fleet is partitioned on |
+| 5b ✅ | **FixBN** — pin the *shared* statistics after a warm-up | `trainers.py` ⚠ | done | added 2026-09-26. Same problem as FedBN, opposite answer, and it leaves ONE global model, so the holdout still measures the model that was trained. arXiv:2303.06530 |
+| 6b ✅ | **The trained weights, not `best.pt`'s fp16 EMA** | `client_app.py` ⚠ | done | not a lever: a bug. `YOLO.train()` rebinds `yolo.model` to a reloaded checkpoint holding `deepcopy(ema).half()`. Measured 355/355 tensors exactly fp16-representable leaving the client against 58/355 live |
+| 6c ✅ | **Server-side EMA across rounds** | `server_app.py` ⚠ | done | the client's EMA restarts at `updates = 0` every round, so 88 steps reach decay 0.043 while the ceiling's 3 168 reach 0.795. Bias-corrected. arXiv:2507.20016 |
+| 6d ✅ | **`freeze` on round 1** | both ⚠ | done | measured: it pins the backbone's BN statistics too, so round 1 federates only the head. arXiv:2306.03937, arXiv:2106.06042, arXiv:2310.17097 |
+| 6e ✅ | **`imgsz` as one number for all four stages** | both + pipeline | done | BDD frames are 1280x720; published numbers on this dataset are 0.470 mAP50 at 640 against 0.625 at 1024. The baseline and holdout already took the flag |
 | 6 | True per-step FedProx | `DetectionTrainer` subclass ⚠ | ~15 lines | today's is a post-hoc weight-space pull, which is honest but is not FedProx |
 | 7 | Personalised heads | strategy ⚠ | medium | stacks with 5; both are "share the backbone" |
 

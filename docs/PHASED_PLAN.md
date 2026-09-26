@@ -271,10 +271,35 @@ Prompt: [`docs/prompts/2026-08-16-phase2-schedule-and-head.md`](prompts/2026-08-
 Backlog 42, 31, 81. This phase produces no feature. It produces the right to say the
 word "better".
 
-The known bad case: a ceiling trained on 14 000 images for 24 epochs (1.667× the
-budget) scored **0.4771**, *lower* than the 8 400-image ceiling's **0.4936**. More data
-and more compute produced a worse model. Whatever caused that, it puts a floor under
-believable differences at roughly ±0.016 mAP50.
+> **Answered 2026-09-02, and ±0.016 was the wrong instrument.**
+>
+> Three seeds, everything else identical, IID fleet, 6 × 1 400 images, 2 rounds × 1
+> epoch, **the same holdout in every arm** (seed 0, fingerprint `3af571c2c901`, verified
+> per arm):
+>
+> | seed | holdout mAP50 |
+> |---|---|
+> | 0 | 0.1193 |
+> | 1 | 0.1157 |
+> | 2 | 0.1186 |
+>
+> **max − min = 0.0036, half-range ±0.0018, stdev 0.0019 — 8.9× tighter than ±0.016.**
+>
+> ±0.016 was inferred from the centralised-ceiling anomaly below: two *different data
+> volumes* in a *non-federated* setting. It was never a seed spread, and using it as one
+> has been dismissing real differences. **It re-opens results previously written off**,
+> including FedBN's +0.0040, which exceeds this spread and was recorded as null.
+>
+> Caveats, because n=3: `max − min` under-reports the true spread, so ±0.0018 is a lower
+> bound. Measured at 2 × 1 on IID; the headline runs 6 × 4 non-IID, where partitioning
+> adds a second source of variance. Full detail in
+> [`FEDERATED_DETECTION.md`](FEDERATED_DETECTION.md).
+
+The known bad case, which is a *different* phenomenon and remains unexplained: a ceiling
+trained on 14 000 images for 24 epochs (1.667× the budget) scored **0.4771**, *lower*
+than the 8 400-image ceiling's **0.4936**. More data and more compute produced a worse
+model. That anomaly is real and worth chasing — it is simply not the federated seed
+spread, and must stop being quoted as one.
 
 | Run | Command | Answers |
 |---|---|---|

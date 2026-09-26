@@ -79,6 +79,36 @@ plots_every_round = false # true restores drawing ultralytics' pictures every ro
 optimizer = "auto"
 lr0 = 0.0                 # 0.0 = leave ultralytics alone
 mosaic = -1.0             # negative = leave the default; 0.0 legitimately means "mosaic off"
+# Freeze the first N layers on ROUND 1 ONLY, so the part-random head settles against
+# features the backbone already had instead of pulling them apart. 10 is the YOLOv8s
+# backbone; 0 = off. Measured motivation: the warm-started model scored 0.2582 on the
+# holdout untrained and 0.2073 after two rounds. Prior art: arXiv:2306.03937 (probe then
+# fine-tune), arXiv:2106.06042 (FedBABU), arXiv:2310.17097 (FedSTO, on BDD100K).
+freeze_round1 = 0
+
+# Server-side EMA of the aggregated model, across rounds. 0.0 = off. The federation ends
+# every round on an essentially unsmoothed model while the centralised ceiling it is
+# compared against does not: ultralytics rebuilds its own EMA per train() with updates=0,
+# so 88 client steps reach decay 0.043 against the ceiling's 0.795. Averaging has to
+# happen where the rounds are. Bias-corrected, so round 1 is exactly the aggregate.
+# This changes what the clients continue from, so it is a different federation, not a
+# reporting change. Prior art: arXiv:2507.20016 (FedSWA), arXiv:2505.00318 (FedEMA).
+server_ema = 0.0
+
+# FixBN (arXiv:2303.06530): from this round onward, every client normalises with the
+# aggregate's BatchNorm statistics and stops updating them. 0 = off. The warm-up matters:
+# the statistics have to be worth pinning before they are pinned, so 1 would pin COCO's
+# initial ones. Unlike FedBN this leaves ONE global model, so the holdout keeps measuring
+# the model that was actually trained.
+fix_bn_from_round = 0
+
+# Input resolution for training AND for the clients' own validation. BDD100K frames are
+# 1280x720, so at 640 a traffic light is sub-20px. Published numbers on this dataset:
+# 0.470 mAP50 for yolov8n at 640 against 0.625 for yolov8s at 1024. The pipeline scores
+# the shared holdout and the centralised baseline at whatever this is set to, so raising
+# it does not quietly become an unfair comparison. Costs activation memory as the square:
+# the client scales its batch by (640/imgsz)^2.
+imgsz = 640
 
 # NOTE: `flwr run` rewrites this section in place on first use — it migrates the
 # federations to ~/.flwr/config.toml and comments out everything below, leaving a
@@ -87,25 +117,41 @@ mosaic = -1.0             # negative = leave the default; 0.0 legitimately means
 # `git checkout -- pyproject.toml` after a run, and change live settings with
 # `flwr run . --federation-config "..."` or in ~/.flwr/config.toml.
 
-[tool.flwr.federations]
-default = "local-simulation"
 
-[tool.flwr.federations.local-simulation]
-options.num-supernodes = 2
-options.backend.client-resources.num-cpus = 4
-# num-gpus = 1.0 on a single-card host makes Ray schedule clients ONE AT A TIME on
-# the GPU: slower, but no OOM. Drop to 0.5/0.33 only once you know one client's real
-# footprint. Set to 0 to fall back to CPU-only hosts.
-options.backend.client-resources.num-gpus = 1.0
-# flwr >= 1.31 reads `init-args` with dashes; the old `init_args.num_cpus` spelling
-# is parsed as an unknown key and silently ignored.
-options.backend.init-args.num-cpus = 8
-options.backend.init-args.num-gpus = 1
+#######################################################################
+# CONFIGURATION MIGRATION NOTICE:
+#
+# What was previously called "federation config" for SuperLink
+# connections in pyproject.toml has been renamed and moved.
+#
+# These settings are now **SuperLink connection configuration**
+# and are defined in the Flower configuration file.
+#
+# The entries below are commented out intentionally and are kept
+# only as a migration reference.
+#
+# Docs: https://flower.ai/docs/framework/ref-flower-configuration.html
+#######################################################################
 
-# Real distributed deployment (Flower Deployment Engine): one SuperLink + N
-# SuperNodes over gRPC+TLS. Point `address` at the SuperLink Exec API (9093) and
-# `root-certificates` at the CA cert. Run with: flwr run . remote-deployment
-# Override the host with the FL_SUPERLINK_HOST env at launch time if templating.
-[tool.flwr.federations.remote-deployment]
-address = "127.0.0.1:9093"
-root-certificates = "certs/ca.crt"
+# [tool.flwr.federations]
+# default = "local-simulation"
+
+# [tool.flwr.federations.local-simulation]
+# options.num-supernodes = 2
+# options.backend.client-resources.num-cpus = 4
+# # num-gpus = 1.0 on a single-card host makes Ray schedule clients ONE AT A TIME on
+# # the GPU: slower, but no OOM. Drop to 0.5/0.33 only once you know one client's real
+# # footprint. Set to 0 to fall back to CPU-only hosts.
+# options.backend.client-resources.num-gpus = 1.0
+# # flwr >= 1.31 reads `init-args` with dashes; the old `init_args.num_cpus` spelling
+# # is parsed as an unknown key and silently ignored.
+# options.backend.init-args.num-cpus = 8
+# options.backend.init-args.num-gpus = 1
+
+# # Real distributed deployment (Flower Deployment Engine): one SuperLink + N
+# # SuperNodes over gRPC+TLS. Point `address` at the SuperLink Exec API (9093) and
+# # `root-certificates` at the CA cert. Run with: flwr run . remote-deployment
+# # Override the host with the FL_SUPERLINK_HOST env at launch time if templating.
+# [tool.flwr.federations.remote-deployment]
+# address = "127.0.0.1:9093"
+# root-certificates = "certs/ca.crt"

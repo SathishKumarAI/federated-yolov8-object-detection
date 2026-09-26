@@ -27,7 +27,8 @@ import sys
 import time
 from pathlib import Path
 
-from . import compare, holdout, paths
+from . import compare, holdout, paths, vehicles
+from .stages import Config
 
 RESULTS = paths.STATE / "experiments"
 
@@ -61,12 +62,26 @@ def command(arm: dict, confirm: bool) -> list[str]:
            "--rounds", str(arm.get("rounds", 2)),
            "--epochs", str(arm.get("epochs", 1)),
            "--seed", str(arm.get("seed", 0)),
-           "--partition", str(arm.get("partition", "condition")),
+           # Config.partition, not a literal. This was hardcoded "condition"; when the
+           # default moved to "random" every arm of every preset would have silently
+           # rebuilt the fleet as non-IID -- including the seed sweep whose entire job
+           # is to hold everything except the seed constant.
+           "--partition", str(arm.get("partition", Config.partition)),
            "--alpha", str(arm.get("alpha", 0.5)),
            "--size-skew", str(arm.get("size_skew", 0.0)),
-           "--strategy", str(arm.get("strategy", "fedavg"))]
+           "--strategy", str(arm.get("strategy", "fedavg")),
+           # Never passed before, so every arm ran at 1.0 and took ~1.9x longer than
+           # the same run launched by hand.
+           "--gpu-fraction", str(arm.get("gpu_fraction", 1.0))]
     if arm.get("per_vehicle"):
         cmd += ["--per-vehicle", str(arm["per_vehicle"])]
+    if arm.get("local_bn"):
+        cmd.append("--local-bn")
+    # `--all` includes the gated `baseline` stage, which trains a whole centralised
+    # model. With --yes that fires once per arm: a three-seed sweep would train three
+    # identical ceilings to measure a spread the ceiling plays no part in.
+    if arm.get("skip"):
+        cmd += ["--skip", str(arm["skip"])]
     if confirm:
         cmd.append("--yes")
     return cmd
@@ -137,12 +152,25 @@ def main(argv=None) -> int:
     ap.add_argument("--rounds", type=int, default=2)
     ap.add_argument("--epochs", type=int, default=1)
     ap.add_argument("--per-vehicle", type=int, default=0)
+    ap.add_argument("--partition", default=Config.partition, choices=vehicles.PARTITIONS,
+                    help="held constant across arms, except in the `partitions` preset")
+    ap.add_argument("--gpu-fraction", type=float, default=1.0,
+                    help="passed to every arm; 0.5 runs two clients at once")
+    ap.add_argument("--local-bn", action="store_true",
+                    help="FedBN in every arm")
+    ap.add_argument("--skip", default="baseline",
+                    help="stages to leave out of every arm. Defaults to `baseline`: "
+                         "`--all` would otherwise retrain the centralised ceiling once "
+                         "per arm, and the ceiling does not vary with the thing being "
+                         "swept. Pass an empty string to include it")
     ap.add_argument("--yes", action="store_true", help="confirm the gated stages in every arm")
     ap.add_argument("--dry-run", action="store_true", help="print the commands and stop")
     args = ap.parse_args(argv)
 
     base = {"profile": args.profile, "vehicles": args.vehicles, "rounds": args.rounds,
-            "epochs": args.epochs, "per_vehicle": args.per_vehicle}
+            "epochs": args.epochs, "per_vehicle": args.per_vehicle,
+            "partition": args.partition, "gpu_fraction": args.gpu_fraction,
+            "local_bn": args.local_bn, "skip": args.skip}
     if args.arms:
         arms = json.loads(args.arms.read_text())
         arms = [{**base, **a} for a in arms]

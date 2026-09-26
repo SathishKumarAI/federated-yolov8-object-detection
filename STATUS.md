@@ -2,234 +2,227 @@
 
 Update this when you STOP working, not when you start.
 
-- **Last touched:** 2026-09-02
+- **Last touched:** 2026-09-26
 
 ## Where I stopped
 
-Six commits on a new stack above the previous session's, none merged. `main` is
-**unchanged since PR #29** and is now ~76 commits behind; merging that stack is still
-the largest single item outstanding and still the one step nothing here can do.
-
-This session did not move mAP. It moved what the numbers *mean*: two of the beliefs
-the phased plan is built on turned out to be false, and the one that mattered most had
-been silently true since the first run.
-
-## `lr0` has never been the learning rate
-
-`optimizer="auto"` is the Ultralytics default and the client never overrode it. `auto`
-**replaces `lr0`** with `0.002·5/(4+nc)` = **5.88e-4** and says so:
+One integration branch, `feat/accuracy-program`, holding eight commits above the previous
+session's six. Everything is merged **into it**; nothing has reached `main` yet. Tests:
+**78 my-project + 175 pipeline = 253**, all green.
 
 ```
-optimizer: 'optimizer=auto' found, ignoring 'lr0=0.01' and 'momentum=0.937' and
-           determining best 'optimizer', 'lr0' and 'momentum' automatically...
-optimizer: AdamW(lr=0.000588, momentum=0.9)
+main
+ └── fix/experiment-passes-through-the-runners-levers   (6, from 2026-09-02)
+      └── feat/accuracy-program                         ← everything below is here
+           ├── test/shard-spotcheck  ·  docs/accuracy-findings
+           ├── fix/weights-that-travel                  the bug
+           ├── feat/head-freeze-round-one               ·  feat/server-side-ema
+           ├── feat/fixbn                               ·  perf/imgsz-as-a-lever
+           └── fix/flwr-launcher-blocked-by-app-control
 ```
 
-Every run this project has ever done trained with **AdamW at 5.88e-4**, not SGD at
-0.01. `lrf` and `warmup_epochs` are *not* overridden, so the "six independent anneals"
-fact survives; only its `lr0` framing falls.
+## The bug: FedAvg was not averaging what the clients trained
 
-**This strikes PR #53.** That branch computes `lr0_round` per round and passes it
-without setting `optimizer`, so every value was discarded and only its `lrf_round`
-applied. Its "−0.0079 mAP50, negative at six of six rounds" is currently the reason
-this project believes a global anneal does not help, and **it did not test one.**
-Rebase with `optimizer` set explicitly and re-run at `local_epochs = 4`.
+`YOLO.train()` does not hand back the module it trained. It reloads a checkpoint
+(`engine/model.py:828`) and rebinds `yolo.model` to it, and the checkpoint holds only
+`deepcopy(ema).half()` — `"model"` is written as `None` (`engine/trainer.py:725,740`) and
+the loader prefers `ckpt["ema"]` (`nn/tasks.py:1899`). So what `get_weights` serialised was
+the **fp16-rounded EMA of the epoch each client's own 280-image val split liked best**.
 
-The client now warns loudly when handed `lr0` with `optimizer="auto"`, because that
-combination is a silent no-op that reads as a learning-rate experiment.
+```
+weights leaving the client  : 355/355 tensors exactly fp16-representable
+live trained model          :  58/355 tensors exactly fp16-representable
+num_batches_tracked         : differs by exactly the epoch's 119 batches
+```
 
-**Checked and clean, but only by luck.** `auto` also picks AdamW vs MuSGD by
-`iterations = ceil(len(dataset)/max(batch, nbs)) * epochs`, divisor 64 not 16. Client
-1400×4 = 88, centralised ceiling 8400×24 = 3168, both under the 10 000 threshold, so
-both arms got the same optimiser at the same LR and **the 84.5 % headline is not
-contaminated.** At *full* scale the ceiling is 14 208 iterations, crosses it, and would
-train with MuSGD at lr0 = 0.01 against clients on AdamW at 5.88e-4 — a 17× gap, in the
-one run this project exists to produce, with nothing warning. Set `optimizer` on both
-sides before running that.
+355/355 is the `.half().float()` signature — a tensor that has been through fp16 is
+bit-identical to its own fp16 cast. Every BatchNorm counter that travelled was **0**,
+because `ModelEMA.update` lerps only floating-point tensors.
 
-## The 27 % utilisation was the dataloader, and it was never decode
+**The round-over-round checksum cannot see this.** Both the EMA and the trained weights
+change every round. It proves *something* moved, never that the *right tensors* did — the
+one caveat this project's most trusted signal was missing.
 
-Phase 1 closed with "neither of the two suspects in this plan explains it" and three
-guesses. It was none of them. Measured on the dataset alone — no model, no GPU:
+Fixed by taking the weights from the trainer (`trained_model`), which removes the fp16
+round-trip, the unasked-for EMA, and the per-client best-epoch selection at once. Both
+checksums are now logged every round.
 
-| | ms/sample |
+## Four levers added, every one off by default
+
+| lever | flag | what it does |
+|---|---|---|
+| round-1 backbone freeze | `--freeze-round1 10` | measured: also pins the backbone's BN statistics (`trainer.py:701-707`), so round 1 returns a bit-identical backbone from every vehicle and federates **only the head** — LP-FT / FedBABU / FedSTO, arrived at by the library's own implementation detail |
+| server-side EMA | `--server-ema 0.7` | bias-corrected average of the aggregate across rounds. The client's EMA restarts at `updates = 0` every round (88 steps → decay 0.043; the ceiling's 3 168 → 0.795) |
+| FixBN | `--fix-bn-from-round 3` | pins the **shared** statistics after a warm-up. Unlike FedBN it leaves one global model, so the holdout still measures what was trained. Measured on a real round: `running_mean` 0/57 moved, conv weights 57/58 moved |
+| image size | `--imgsz 1024` | one number for the federation, the clients' own val, the centralised baseline and the holdout. The last two already took the flag, so raising it cannot silently become an unfair comparison |
+
+`optimizer` and `strategy` were already run-config keys, so "put adaptivity on the server"
+needs **no code** — `--strategy fedadam` with an explicit `optimizer` is two runs.
+
+## What the literature says, and the result that reframes the project
+
+Full reading with every source link:
+[`docs/findings/2026-09-26-accuracy-findings.md`](docs/findings/2026-09-26-accuracy-findings.md).
+
+The one to internalise — [arXiv:2509.01868](https://arxiv.org/abs/2509.01868), Sept 2026,
+YOLOv8 on **BDD100K**, 8 clients, 10 rounds × 3 local epochs:
+
+| | mAP50 |
 |---|---|
-| stock (`mosaic=1.0`, `erasing=0.4`) | **7.93** |
-| `mosaic=0.0` | 5.56 |
+| centralised | 61.4 |
+| FedAvg | **61.5** |
+| FedAsync | 45.7 |
 
-At batch 16 that is ~127 ms of CPU per batch on the training thread, the same order as
-the GPU step. That also explains `cache="ram"` measuring *slower*: caching removes the
-JPEG decode and leaves the mosaic assembly and the warps. And `close_mosaic = 10` fires
-at `epoch == epochs − close_mosaic`, negative for a 1–4 epoch round, so **mosaic never
-closes inside a federated round.**
+FedAvg matched its ceiling. **84.5 % retention is not a law of federated detection**, and
+staleness (FedAsync, −15.8) is what actually destroys detection accuracy — worth remembering
+before straggler simulation gets added as "realism". Their 61.4 against this project's
+0.4936 ceiling is the other half: absolute accuracy here is capped by **resolution and
+budget**, not by federation.
 
-`workers > 0` is now measured rather than deduced-moot, same conclusion, different
-reason: `workers=0` 36.2 s, `workers=4` 34.3 s, `workers=8` **40.1 s**. Windows has no
-`fork`. The recorded "deadlock inside a Ray actor" did not reproduce.
+## Environment: two new traps, both cost a run
 
-## What shipped: 1.19×, free
+1. **Application Control blocks `Scripts\flwr.exe`.** `[WinError 4551] An Application
+   Control policy has blocked this file`, mid-run, on a machine where nothing changed on
+   purpose. A pip console script is an unsigned `.exe` generated locally — the same
+   mechanism that makes conda unusable here. `stages.flwr_launcher()` now returns
+   `python -c "from flwr.cli.app import app; app()"`. **Do not "fix" it back to the .exe.**
+2. **A concurrent agent's `taskkill /F /IM python.exe` killed a federation mid-round.**
+   `/IM` matches *every* `python.exe` on the machine, so clearing one stale dashboard
+   server took three processes with it, one of them a live `flwr run`. **Never blanket-kill
+   an image name here; kill by PID.**
 
-`plots=True` is the default and the client never overrode it, so every round drew
-`labels.jpg`, `train_batch*.jpg` and the confusion matrix / PR curves — **into a
-directory the next round overwrote.** `exist_ok=True` means only the last round's
-pictures ever survived, and `train_artifacts.py` says so in its own docstring. Five
-rounds of six paid GPU time for files destroyed unread.
+   I first wrote this up as "Ray crashed at `--gpu-fraction 0.5`", on the strength of a
+   `Windows fatal exception: access violation` in the raylet in that run's log. **That was
+   wrong and the evidence says so:** the same line appears in a later arm that carried on
+   training past it, and the run with no violation at all is the one that also completed.
+   The line is intermittent Ray-on-Windows noise around `worker.disconnect`, not a cause of
+   death. `--gpu-fraction 0.5` is **not** implicated — the documented 0.33 host-memory
+   failure is a separate, real measurement and still stands.
 
-The server now sends `plots` and sets it True on the final round only.
+## Measured this session, after the code landed
 
-| arm (1 epoch, batch_1, 3 interleaved repeats) | median | spread | util | |
-|---|---|---|---|---|
-| baseline | 27.2 s | 7.6 | 25.4 % | 1.00× |
-| `plots=False` | 22.9 s | 0.3 | 31.2 % | **1.19×** |
-| `plots=False save=False` | 22.8 s | 0.4 | 29.9 % | 1.20× |
-| `plots=False save=False mosaic=0` | 20.4 s | 0.9 | 32.4 % | 1.34× |
+**The floor is ±0.0077, not ±0.0018.** Re-measured at the same conditions on the fixed
+transport: seeds 0/1/2 scored **0.2135 / 0.2207 / 0.2289**, mean 0.2210, max−min 0.0154.
+Still a lower bound at n=3. Every lever above has to clear 0.0077.
 
-**Read that table twice.** One run per arm said `plots=False` was worth **1.52×**. It
-is worth **1.19×**. The difference is one cold start — the baseline's repeats were
-34.6 / 27.1 / 27.2 s, and the first `train()` in a process pays CUDA context, cuDNN
-autotune and the AMP check. Arms run in a fixed order, so the first arm of the first
-repeat always eats it. Interleave, repeat, quote the median.
+**The old floor's three arms are irreproducible** — 0.1193 / 0.1157 / 0.1186 then against
+those three now, no overlap, a systematic ≈ +0.10 that the transport fix does **not**
+explain (it measures +0.0042 on a controlled single-client comparison). Unattributed, and
+recorded that way. Aug-16 runs at this budget scored 0.2073 and 0.2097 — where today's arms
+sit — so the five Sept-2 `random` runs are the outliers.
 
-`save=False` buys nothing, so `final_eval`'s second validation pass is not where the
-time goes and the EMA-versus-raw-weights question it would have raised does not need
-answering. `mosaic=0` is worth a further 1.12× but changes the data path, so it stays a
-run-config key at its default until the holdout clears it.
-
-## FedBN is the missing technique, and it should be phase 5 item 0
-
-`get_weights` sends the full `state_dict` — deliberately, and its docstring explains
-why: dropping BatchNorm buffers would make the federated model wrong. Correct for IID
-clients.
-
-This fleet is partitioned by **condition**. That is *feature* shift, which is exactly
-what BN running statistics encode, so FedAvg is averaging a night vehicle's
-`running_mean` with a clear-daylight vehicle's and producing statistics that describe
-no vehicle's data. FedBN — keep BN local, share the rest — targets that axis directly,
-costs a filter on which tensors travel, and was absent from the phase-5 table where
-every other entry addresses *parameter*-space drift.
-
-Design note, with the mechanism for true per-step FedProx and the `num_examples`
-images-vs-objects question: [`docs/FEDERATED_DETECTION.md`](docs/FEDERATED_DETECTION.md).
-
-## Also landed
-
-- **Per-class AP** on the holdout — scorer, run report, and a dashboard panel. `car` is
-  ~90 % of the objects in a 1 000-image holdout, so one averaged mAP is close to a car
-  detector's report card. Two Ultralytics traps guarded by tests: `box.ap50` is indexed
-  by position in `ap_class_index`, not by class id, and `box.maps` pre-fills absent
-  classes with the overall `map` — `train`, 29 instances fleet-wide, would have been
-  reported as scoring the fleet average.
-- **Holdout fingerprint.** `size` and `seed` describe how the slice was requested; the
-  same pair drawn from a val pool that has since grown gives different images and
-  identical metadata. (The *fleet* was already content-hashed — `Vehicle.fingerprint`
-  and `fleet.meta.json` — despite the phased plan listing it as missing. The leakage
-  gate was already a halting stage too.)
-- **`fraction_evaluate`** is a run-config key. It was never set, so FedAvg's 1.0
-  applied and every client re-scored itself every round: phase 0's 13.8 %. Still 1.0.
-- The view-id test now covers every dashboard module, not just `control.js`.
-
-## Later the same day: FedBN, an IID fleet, and the model running live
-
-**The fleet is now random (IID)**, fingerprint `090d345dbb14`, `validate` clean. The
-`Config.partition` default moved with it — `_check_fleet` rebuilds whenever the config
-disagrees with the data, so a default left at `condition` would have silently
-repartitioned the fleet on the next run.
-
-**FedBN is implemented and it engaged** — clients log *"kept 285 local tensors, applied
-70 from the aggregate"*, matching the 285 of 355 measured statically. YOLOv8s is
-BatchNorm-dense in tensor count (80.3 %) and nearly BatchNorm-free in weight (0.36 %).
-
-| round | FedAvg | FedBN | Δ mAP50 |
-|---|---|---|---|
-| 1 | 0.1045 | 0.1085 | +0.0040 |
-| 2 | 0.1201 | 0.1218 | +0.0017 |
-
-**No measured difference**, both far inside ±0.016 — and that is the *predicted* result,
-flagged before the run. Random partitioning gives every client the same input
-distribution, so there is no feature shift for a local BatchNorm to preserve. FedBN was
-given nothing to do. It is **implemented, tested, and unmeasured on the partition it is
-for**; the run that would test it is the same pair on `--partition condition`
-(fingerprint `7170c3ee9350`), reported per vehicle, after the seed spread.
-
-Second caveat, structural: under FedBN the saved checkpoint carries the *averaged* BN,
-which is no vehicle's, so a holdout score on it measures a model that never existed.
-The FedBN column is a lower bound even where the method applies.
-
-**The model now runs live on other machines.** `pipeline/edge.py` per test machine pulls
-the current global checkpoint, runs it on a camera, and reports to a new dashboard panel.
-Verified end to end: a node downloaded `global_round_6.pt` and ran at **15.07 fps,
-36.74 ms/frame on CPU**, frames served as JPEG, `/api/node-frame/..%2f..%2fsecret` → 404.
-Nodes cache on the checkpoint's content hash, not its name, because a re-run rewrites
-`global_round_1.pt` with different weights. Nothing on a node trains — a camera stream
-has no labels. See [`docs/REALTIME_NODES.md`](docs/REALTIME_NODES.md).
-
-The dashboard still binds **loopback by default**; `--host 0.0.0.0` is opt-in and prints
-a warning, because `POST /api/run` starts training subprocesses and nothing authenticates.
-
-**Upstream checked** (see CLAUDE.md): flwr 1.33.0 vs 1.36.0, ultralytics 8.4.115 vs
-8.4.138. This project is written against Flower's **legacy** API — the Message API
-replaces `server_fn`/`client_fn`/`FitIns`/`FitRes` and would make the B9 bug
-structurally impossible. Ultralytics **8.4.130 changed their tuner's default optimizer
-to AdamW "so that learning rate and momentum actually affect training"** — upstream
-independently hitting this repo's fact 1.
+**And the B4 guard was reading a three-week-old log.** `paths.log_dirs()` did not include
+`pipeline/vehicles/logs`, which is where a federation's server log goes (it follows
+`FL_AV_DATA_ROOT`, not the package). So `federation_learned()` returned PASS from Sept 2's
+checksums for every run since the fleet existed — inert in the direction that passes. Fixed,
+with a general test that no federation log may sit outside the searched directories.
 
 ## Next action
 
-1. **Merge the stack.** Unchanged and still blocking everything. `gh pr merge` is
-   refused by a permission classifier here, so it needs a human or an allowlist entry.
-   Bottom-up: `39 → 43 → 44 → 45 → 46 → 47 → 48 → 49 → 50 → 51 → 52`, then this
-   session's six. **#53 must not merge and its result must not be carried forward.**
-2. **Phase 3, the seed spread.** `python -m pipeline.experiment --preset seeds --seeds
-   0,1,2 --yes`. Still the blocking item for every comparison, and this session added
-   two more results (mosaic, plots) that want a spread beside them.
-3. **Set `optimizer` explicitly, then redo phase 2.** Nothing about learning rate is
-   testable until this lands. Then: a lower `lr0` for the warm-started head, and #53's
-   anneal re-run at `local_epochs = 4`, which is the configuration its argument is
-   about.
-4. **FedBN.** Cheapest entry in phase 5 and the only one aimed at this fleet's actual
-   non-IID axis. Note it removes the single global model, so the leaderboard must say
-   whether it reports per-vehicle BN or BN re-estimated on the holdout.
-5. **Re-run the headline at 6 × 4 with the warm-started head**, once 2 and 3 are done.
+1. `--imgsz 1024` at 6 × 4. Largest expected effect, touches no data, and the baseline and
+   holdout follow the same flag.
+3. `--freeze-round1 10`, then `--server-ema 0.7`, then `--fix-bn-from-round` at half the
+   run length. One at a time; each has to clear **±0.0077** to count.
+4. `--strategy fedadam` / `fedavgm` with an explicit `optimizer`, at a real budget — the
+   existing comparison ran 2 × 1, where a server-side optimiser has had two steps.
+5. **Per-class AP on the four classes `warm_start_head` could not warm** (`rider`,
+   `trailer`, `other person`, `other vehicle`). Free, and it tests *Where to Begin?*'s
+   prediction about where the residual loss now sits.
+6. **Open the PR for `feat/accuracy-program` and squash-merge it.** `main` is still
+   ~80 commits behind.
 
 ## Verification
 
 ```bash
-python -m pytest my-project/tests -q     # 45
-python -m pytest pipeline/tests -q       # 148
+python -m pytest my-project/tests -q     # 78
+python -m pytest pipeline/tests -q       # 175
 python -m pipeline.verify                # the four pass criteria against the last run
-python -m pipeline.holdout --evaluate    # now prints a per-class table too
+python -m pipeline.holdout --evaluate    # per-class table included
 ```
 
 ## Environment (the part that costs an hour if you forget it)
 
 Venv at `C:\Users\PRANAS\venvs\fl_yolov8`, built on python.org 3.12 — *not* conda; Smart
-App Control blocks conda-forge's `_bz2.pyd`. See [`docs/ENV_WINDOWS.md`](docs/ENV_WINDOWS.md).
-Export `FLWR_DISABLE_RUNTIME_DEPENDENCY_INSTALLATION=1` before `flwr run`, or every
-client trains on CPU at 5.5× the wall clock with no error anywhere.
+App Control blocks conda-forge's `_bz2.pyd`. See
+[`docs/ENV_WINDOWS.md`](docs/ENV_WINDOWS.md), which now also carries the `flwr.exe` case.
+Export `FLWR_DISABLE_RUNTIME_DEPENDENCY_INSTALLATION=1` before `flwr run`, or every client
+trains on CPU at 5.5× the wall clock with no error anywhere.
 
-**`--gpu-fraction 0.33` has no headroom, and it bit this session.** It is the fastest
-setting and it fills 94.9–96.6 % of VRAM with three concurrent Ray actors. A 2-round run
-died mid-round-2 on a **host** allocation — `numpy ... _ArrayMemoryError: Unable to
-allocate 11.8 MiB` — with peak VRAM at 15 751 of 16 303 MiB. Use **0.5** (two clients,
-still 1.50×) if anything else is running on the machine. The pipeline halted correctly:
-**Ray exits 0 after an actor dies**, and the runner's output inspection is the only
-thing standing between that and a short run reported as a finished one. The
-snapshot-based `pyproject.toml` restore also survived the crash.
-
-**Data: unchanged.** All ten shards hold real BDD100K, hardlinked onto the kagglehub
-cache. The fleet on disk is **1 400 images/vehicle, condition-partitioned, seed 0**.
-The attribute index (79 863 images) is cached at `pipeline/.state/attributes.json`.
+**Data: unchanged, and now checked against BDD itself.** Ten shards of real BDD100K,
+hardlinked onto the kagglehub cache, random partition, seed 0, 1 400 images/vehicle,
+fingerprint `c26b38858636`. `pipeline/spotcheck.py` decoded 100 sampled images and
+reconstructed 1 724 boxes from `bdd100k_labels_images_*.json`: **max coordinate error 0.0**.
+The condition partition's *labels* are the part that is not sound — `overcast residential`
+can supply 685 images locally and `parking / tunnel` 319, so at 1 400/vehicle those two
+profiles are 51 % and 77 % random top-up. See
+[`docs/DATA_VALIDATION.md`](docs/DATA_VALIDATION.md).
 
 ## The result this project exists to produce, unchanged
 
-6 rounds × 4 local epochs × 6 vehicles × 1 400 images, against a budget-matched
-centralised ceiling on the same 201 600 image-visits:
+6 rounds × 4 local epochs × 6 vehicles × 1 400 images, against a budget-matched centralised
+ceiling on the same 201 600 image-visits:
 
 | on 1 000 held-out images | federated | centralised | retained |
 |---|---|---|---|
 | mAP50 | 0.4173 | 0.4936 | **84.5 %** |
 | mAP50-95 | 0.2313 | 0.2770 | 83.5 % |
 
-Nothing this session changed that number. It is now known to be a fair comparison —
-both arms got the same optimiser at the same learning rate — which was worth checking
-and was not guaranteed.
+**It was produced by the broken transport.** Both arms were, so the *ratio* is not
+obviously wrong — the centralised arm has no federation to break — but the federated number
+is the average of fp16 EMAs of per-client best epochs, and it has to be re-run before it
+means what it says.
+
+---
+
+## The dashboard, 2026-09-26 — `feat/dashboard-2030`, merged into `feat/accuracy-program`
+
+Built on a separate branch in its own worktree. Six commits, 206
+pipeline tests green, no GPU touched. What changed, and where to pick it up.
+
+### What it does now
+
+| | |
+|---|---|
+| transport | `/api/stream` pushes `/api/state` as a snapshot then numbered diffs, woken by the event bus. One shared snapshot with a 0.35 s TTL serves every tab. Idle: 3 801 B + 1 155 B of patches per six seconds, against 11 403 B for the old 2 s poll. `/api/state` unchanged and still the resync path |
+| provenance | `pipeline/measurements.py` is the one place a measured number lives, each with the document that records it. `--check` re-reads those documents and fails on drift — it caught two wrong citations the day it was written |
+| the band | the holdout chart draws the run-to-run spread, labelled with its conditions, and **prefers an observed spread** from this machine's own seed repeats when the ledger has any. It has none yet |
+| refusals | the Simulate tab projects cost and **refuses** any lever outside its measured range, naming the measurement that would lift the refusal. It projects no mAP at all |
+| walkthrough | eleven steps, keyboard-only navigation, `?` to open. With no run it replays `pipeline/demo_run.py`; with one it narrates that |
+
+### The next action
+
+**Merged 2026-09-26.** The three predicted conflicts were the only ones, all additive:
+
+1. `do_POST` in `pipeline/server.py` — the accuracy branch wires the five lever body
+   fields; this branch does not touch that block, but both edit the file.
+2. `CLAUDE.md` — both add rows to the "Where to change it" table.
+3. `pipeline/measurements.py` `noise_floor_map50` cites `docs/NOISE_FLOOR.md`, written here
+   because this branch predates the `CLAUDE.md` revision that carries fact 11. **When the
+   two disagree, `CLAUDE.md` is right**; that is written into the doc.
+
+The lever controls turn themselves on when the accuracy branch merges: `options.levers` is
+derived from `Config.__dataclass_fields__`, so no edit is needed. Until then the form
+disables them and says the server has no such field, rather than posting into a void.
+
+### Traps this branch hit
+
+- **A module-scope `setInterval` hangs the node checks.** `stream.js` started a timer at
+  import; the JS test runner waits for an event loop that never drains. Timers now start
+  inside `connectState`.
+- **`f"{1.0:g}"` is `"1"`.** The packing record's key is `"1.0"`, so the wall-clock divisor
+  and the hazard note both silently vanished at `gpu_fraction 1.0` — the one setting
+  actually in use — and the projection still looked complete. `measurements.packing()`
+  matches on the float now.
+- **`drawer.js` registers its own `keydown` at import time.** The walkthrough's keyboard
+  check picked that handler up first and passed vacuously; it now captures only the
+  listeners `wireTour()` itself adds.
+- **A browser was never available.** The Chrome DevTools MCP profile stayed locked by
+  another session. `pipeline/tests/js/live_render.mjs` renders a whole real payload through
+  the real panels under node instead, and it found a live `ReferenceError` that reading the
+  code had not.
+
+### Left undone on purpose
+
+Shard composition against what a condition can actually supply. The measurement lives in
+`docs/DATA_VALIDATION.md` and `pipeline/spotcheck.py`, neither on `main`, and this machine
+has no shards on disk — so it could only have been written, not verified.

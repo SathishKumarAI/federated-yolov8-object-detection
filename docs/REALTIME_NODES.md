@@ -100,9 +100,28 @@ smallest honest fix.
 
 ## Where this goes next
 
-This runs the model live. It does **not** yet make the five machines real Flower
-clients — they infer, they do not train. The path to that is the Flower Deployment
-Engine, which the project has never used (everything so far is the simulation engine):
+This runs the model live. It does **not** make the five machines real Flower *clients* —
+they infer, they do not train. Training over real machines is the Deployment Engine, and
+`pipeline/deploy.py` now drives it:
+
+```bash
+python -m pipeline.deploy --nodes 2 --rounds 2 --epochs 1   # all local
+python -m pipeline.deploy --dry-run                          # print, start nothing
+python -m pipeline.deploy --external-only --superlink-host 0.0.0.0
+```
+
+`--external-only` starts just the SuperLink and prints the exact command each real
+machine runs, which is the whole difference between one host and five.
+
+**`--nodes` defaults to 2, and that default is the interesting part.** Under simulation,
+Ray places clients with `client-resources.num-gpus`, so `--gpu-fraction 0.33` caps the
+fleet at three concurrent clients on one card. A SuperNode is an ordinary OS process:
+nothing schedules it and nothing caps its VRAM. Each carries its own CUDA context
+(~300–500 MiB before any weights) plus a full training footprint, and the measured
+demo-scale peak is already 12–15 GB for two or three *scheduled* clients. Six SuperNodes
+on one 16 GB card will not fit — it fails as out-of-memory, not as slowness.
+
+Underlying commands, for reference:
 
 ```bash
 flower-superlink --insecure                        # Fleet API 9092, Control API 9093

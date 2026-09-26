@@ -11,6 +11,16 @@ export const fmt = (x, d) =>
 export const PALETTE = ["#5ad1e6", "#f0a92b", "#4ec9a0", "#e07ab0", "#a98bf5", "#ff6a5e",
                         "#7fd4a0", "#f5915e", "#9fb0c4", "#69a5ff"];
 
+/**
+ * A value the server does not have.
+ *
+ * Deliberately not `0` and not a bare dash: both read as data. "6 308 examples" was
+ * once printed for a shard holding 10 images, and a dash where a number belongs is the
+ * same bug wearing different clothes. Whatever is not measured says so, and says why.
+ */
+export const unknown = (why) =>
+  `<span class="unk" title="${esc(why)}" tabindex="0" aria-label="not measured: ${esc(why)}">not measured</span>`;
+
 /** Empty state: says what is missing, then which command produces it. */
 export const empty = (title, next) =>
   `<div class="empty"><p class="t">${title}</p><p class="n">${next}</p></div>`;

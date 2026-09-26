@@ -15,21 +15,43 @@ from __future__ import annotations
 import base64
 import binascii
 import json
+import socket
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from urllib.parse import unquote
+from urllib.parse import parse_qs, unquote
 
-from . import (baseline, dataset_stats, docs_index, gpu, holdout, ledger, logparse,
-               nodes, paths, plan, stages, train_artifacts, vehicle_metrics, vehicles,
-               verify)
+from . import (baseline, dataset_stats, demo_run, docs_index, gpu, holdout, ledger,
+               logparse, measurements, nodes, paths, plan, profile as profiler, stages,
+               statestream, train_artifacts, vehicle_metrics, vehicles, verify)
 from .runner import Run
 from .stages import Config
 
+#: Run levers the dashboard offers, each the name of a `Config` field. Which of them the
+#: running server actually has is answered by `Config.__dataclass_fields__`, not by this
+#: list: the plumbing for these lives on the ML side, and a dashboard that offered one
+#: the server could not apply would be posting a field into a void.
+#: UI lever name -> the `Config` field that implements it. They are not always the
+#: same word: the image size is `imgsz_override` because `Config.imgsz` is a property
+#: that falls back to the profile default, and advertising by the UI name alone made
+#: the form disable a lever the server does in fact accept.
+LEVERS = {"freeze_round1": "freeze_round1", "server_ema": "server_ema",
+          "fix_bn_from_round": "fix_bn_from_round", "imgsz": "imgsz_override",
+          "local_bn": "local_bn"}
+
 STATIC = Path(__file__).resolve().parent / "static"
 HISTORY_LIMIT = 500
+
+#: How stale the shared snapshot may be. One snapshot serves every open tab and both
+#: `/api/state` and `/api/stream`, so this is the whole cost of the push loop -- it is
+#: not multiplied by the number of browsers watching.
+SNAPSHOT_TTL = 0.35
+#: Longest a stream sits idle before it sends a keep-alive. A bus event (a log line, a
+#: stage transition, a checksum) wakes it sooner, so this is the ceiling on latency for
+#: things that leave no trace on the bus -- the GPU sampler, mostly.
+STREAM_TICK = 1.0
 
 
 def safe_child(root: Path, rel: str) -> Path | None:
@@ -52,13 +74,27 @@ class Broadcaster:
         self.subscribers: list["list"] = []
         self.history: list[dict] = []
         self.lock = threading.Lock()
+        # Bumped whenever anything happens, so a state stream can wait on real events
+        # instead of spinning on a timer. A revision counter rather than an Event:
+        # with an Event, the first waiter to clear it steals the wake-up from every
+        # other open tab, and the second tab would lag by a whole STREAM_TICK.
+        self.revision = 0
+        self.changed = threading.Condition(self.lock)
 
     def publish(self, ev: dict) -> None:
-        with self.lock:
+        with self.changed:
             self.history.append(ev)
             del self.history[:-HISTORY_LIMIT]
             for q in self.subscribers:
                 q.append(ev)
+            self.revision += 1
+            self.changed.notify_all()
+
+    def wait(self, seen: int, timeout: float) -> int:
+        """Block until the revision moves past ``seen``, or ``timeout``. Returns it."""
+        with self.changed:
+            self.changed.wait_for(lambda: self.revision != seen, timeout)
+            return self.revision
 
     def subscribe(self) -> list:
         q: list = []
@@ -80,6 +116,9 @@ class State:
         self.run: Run | None = None
         self.thread: threading.Thread | None = None
         self.idle_sampler = gpu.Sampler(interval=3.0).start()
+        self._snap: dict | None = None
+        self._snap_at = 0.0
+        self._snap_lock = threading.Lock()
 
     @property
     def busy(self) -> bool:
@@ -190,11 +229,34 @@ class State:
             },
             "links": {"mlflow": "http://127.0.0.1:5000", "ray": "http://127.0.0.1:8265"},
             "options": {"partitions": list(vehicles.PARTITIONS),
-                        "strategies": list(stages.STRATEGIES)},
+                        "strategies": list(stages.STRATEGIES),
+                        # Derived from Config rather than listed, so a lever the running
+                        # server does not implement cannot be offered in the form as
+                        # though it worked. A body field this server has never heard of
+                        # is silently dropped -- exactly the shape of no-op this project
+                        # keeps shipping -- so the UI disables the control and says so.
+                        "levers": {name: field in Config.__dataclass_fields__
+                                   for name, field in LEVERS.items()}},
             "results": [r.__dict__ for r in (self.run.results if self.run else [])],
             "live": self.live(),
             "reports": self.reports(),
         }
+
+    def current(self, cfg: Config) -> dict:
+        """The snapshot, recomputed at most every SNAPSHOT_TTL seconds.
+
+        Shared, and the sharing is the point: `snapshot()` reads every client log, the
+        metrics CSV, the holdout curve and the baseline off disk, and the push loop
+        below asks for it far more often than the old two-second poll did. One tab or
+        five, that work happens once. Callers get the *same object* back within the
+        TTL, which is also how a stream recognises "nothing to send" for free.
+        """
+        with self._snap_lock:
+            now = time.monotonic()
+            if self._snap is None or now - self._snap_at > SNAPSHOT_TTL:
+                self._snap = self.snapshot(cfg)
+                self._snap_at = now
+            return self._snap
 
 
 STATE = State()
@@ -223,7 +285,11 @@ class Handler(BaseHTTPRequestHandler):
         if self.path in ("/", "/index.html"):
             return self._send(200, (STATIC / "index.html").read_bytes(), "text/html; charset=utf-8")
         if self.path == "/api/state":
-            return self._json(STATE.snapshot(CONFIG))
+            # Kept as the whole truth, and as what a stream falls back to: the browser
+            # refetches it if a sequence number ever skips.
+            return self._json(STATE.current(CONFIG))
+        if self.path == "/api/stream":
+            return self._state_stream()
         if self.path == "/api/events":
             return self._sse()
         if self.path.startswith("/static/"):
@@ -239,6 +305,36 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(docs_index.index())
         if self.path.split("?")[0] == "/api/plan":
             return self._json(plan.plan(CONFIG))
+        if self.path.split("?")[0] == "/api/demo":
+            # A recorded run in the shape /api/state returns, so the real panels render
+            # it and the walkthrough needs no views of its own.
+            return self._json(demo_run.payload())
+        if self.path.split("?")[0] == "/api/simulate":
+            # Read-only and side-effect free: it starts nothing, writes nothing, and
+            # touches no global. A GET on purpose, so it adds nothing to the mutating
+            # surface that POST /api/run already is.
+            return self._simulate()
+        if self.path.split("?")[0] == "/api/measurements":
+            # Static and tiny: the provenance every panel cites. Deliberately NOT part
+            # of /api/state -- it never changes while the server runs, so putting it in
+            # the diff stream would ship it once and then never again, which is fine,
+            # and putting it in the snapshot would ship it to every reconnect.
+            # The observed spread is computed here rather than inside `table()` so the
+            # measurement table stays pure data: this half reads the run ledger off
+            # disk, and a spread from this machine's own repeats beats a recorded one.
+            return self._json({**measurements.table(),
+                               "observed_spread": measurements.observed_spread(ledger.load())})
+        if self.path.split("?")[0] == "/api/profile":
+            # Seconds per phase, parsed out of the logs the run already wrote. Costs a
+            # full read of every client log, so it is fetched when someone looks at the
+            # panel rather than on every tick of the state stream.
+            got = profiler.profile()
+            # The verdict is the point: a phase breakdown that leaves the reader to
+            # decide between "clients serialised" and "dataloader starving the GPU"
+            # has not made the measurement useful.
+            if "error" not in got:
+                got = {**got, "verdict": profiler.verdict(got)}
+            return self._json(got)
         if self.path.startswith("/api/vehicle/"):
             return self._vehicle()
         if self.path.split("?")[0] == "/api/train-artifacts":
@@ -316,6 +412,52 @@ class Handler(BaseHTTPRequestHandler):
         if target is None or target.suffix not in self.STATIC_TYPES:
             return self._json({"error": "not found"}, 404)
         self._send(200, target.read_bytes(), self.STATIC_TYPES[target.suffix])
+
+    #: What a projection query may set, and how to read it. Anything else in the query
+    #: string is ignored rather than guessed at -- the panel and this table are the
+    #: contract, and a mistyped parameter silently changing nothing is better than one
+    #: silently being interpreted.
+    SIM_FIELDS = {
+        "vehicles": ("n_vehicles", int), "rounds": ("rounds", int),
+        "epochs": ("local_epochs", int), "per_vehicle": ("per_vehicle_override", int),
+        "seed": ("seed", int), "partition": ("partition", str),
+        "strategy": ("strategy", str), "alpha": ("alpha", float),
+        "size_skew": ("size_skew", float), "gpu_fraction": ("gpu_fraction", float),
+        "profile": ("profile", str),
+        # Routed to the field, not handled separately: `plan.project` still takes an
+        # explicit imgsz for callers that have no Config, but the server now builds a
+        # Config that already carries it, so `budget()` and the projections cannot
+        # disagree about the resolution. They did: the budget block reported the demo
+        # profile's 320 while the projections scaled by the requested 640.
+        "imgsz": ("imgsz_override", int),
+    }
+
+    def _simulate(self) -> None:
+        """Project an arbitrary configuration. Changes nothing, starts nothing."""
+        query = parse_qs(self.path.partition("?")[2])
+        fields: dict = {}
+        for name, (attr, cast) in self.SIM_FIELDS.items():
+            raw = (query.get(name) or [None])[0]
+            if raw in (None, ""):
+                continue
+            try:
+                fields[attr] = cast(raw)
+            except (TypeError, ValueError):
+                return self._json({"error": f"{name}={raw!r} is not a {cast.__name__}"}, 400)
+        # Validated here rather than three layers down, and refused rather than silently
+        # corrected: a projection of a configuration the run form would reject is a
+        # projection of something that cannot happen.
+        if fields.get("partition", Config.partition) not in vehicles.PARTITIONS:
+            return self._json({"error": f"unknown partition {fields['partition']!r}"}, 400)
+        if fields.get("strategy", Config.strategy) not in stages.STRATEGIES:
+            return self._json({"error": f"unknown strategy {fields['strategy']!r}"}, 400)
+        if not 0 < fields.get("gpu_fraction", 1.0) <= 1:
+            return self._json({"error": "gpu_fraction must be in (0, 1]"}, 400)
+        try:
+            cfg = Config(**fields)
+        except TypeError as e:
+            return self._json({"error": str(e)}, 400)
+        self._json(plan.project(cfg))
 
     def _vehicle(self) -> None:
         """Shard composition for one vehicle, for the detail drawer."""
@@ -406,6 +548,46 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(f"data: {json.dumps(ev)}\n\n".encode())
         self.wfile.flush()
 
+    def _state_stream(self) -> None:
+        """Push `/api/state` as a full snapshot then a numbered stream of diffs.
+
+        Separate from `/api/events` rather than multiplexed onto it, because the two
+        have opposite shapes: the event bus is an append-only narration that must be
+        replayed to a late tab, and this is one value whose *history is worthless* --
+        a tab that connects now wants the state now, not every intermediate.
+
+        Latency comes from the bus: a log line, a stage transition or a checksum wakes
+        this loop immediately. STREAM_TICK is the ceiling for the things that leave no
+        event behind, and an unchanged tick sends a comment frame, not a payload.
+        """
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Connection", "keep-alive")
+        # Nagle would hold a small frame waiting for the next one, which is precisely
+        # the latency this route exists to remove.
+        try:
+            self.connection.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        except OSError:
+            pass
+        self.end_headers()
+
+        seq = statestream.Sequence()
+        seen = STATE.bus.revision
+        try:
+            self.wfile.write(seq.open(STATE.current(CONFIG)))
+            self.wfile.flush()
+            while True:
+                seen = STATE.bus.wait(seen, STREAM_TICK)
+                payload = seq.update(STATE.current(CONFIG))
+                # The comment frame is the keep-alive AND the liveness probe: writing
+                # to a browser that has gone away raises, which is the only way this
+                # thread learns to exit.
+                self.wfile.write(payload if payload is not None else b": ping\n\n")
+                self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            pass
+
     #: Ceiling on a request body. Every other POST here is a small JSON config; the
     #: node heartbeat carries a base64 JPEG, which is the only reason this is not tiny.
     #: Read bounded rather than trusting Content-Length: this is the one route that
@@ -443,6 +625,10 @@ class Handler(BaseHTTPRequestHandler):
                 seed=int(body.get("seed", 0)),
                 partition=body.get("partition", Config.partition),
                 local_bn=bool(body.get("local_bn", False)),
+                freeze_round1=int(body.get("freeze_round1", 0) or 0),
+                server_ema=float(body.get("server_ema", 0.0) or 0.0),
+                fix_bn_from_round=int(body.get("fix_bn_from_round", 0) or 0),
+                imgsz_override=int(body.get("imgsz", 0) or 0),
                 alpha=float(body.get("alpha", 0.5) or 0.5),
                 size_skew=float(body.get("size_skew", 0.0) or 0.0),
                 gpu_fraction=float(raw_fraction) if raw_fraction not in (None, "") else 1.0,

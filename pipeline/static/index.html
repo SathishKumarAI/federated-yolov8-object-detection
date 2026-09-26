@@ -21,10 +21,13 @@
     <button class="tab" role="tab" aria-selected="false" aria-controls="view-data" data-view="data">Data</button>
     <button class="tab" role="tab" aria-selected="false" aria-controls="view-metrics" data-view="metrics">Metrics</button>
     <button class="tab" role="tab" aria-selected="false" aria-controls="view-plan" data-view="plan">Plan</button>
+    <button class="tab" role="tab" aria-selected="false" aria-controls="view-simulate" data-view="simulate">Simulate</button>
     <button class="tab" role="tab" aria-selected="false" aria-controls="view-docs" data-view="docs">Docs</button>
   </div>
   <div class="spacer"></div>
   <span class="lamp l-idle" id="runState">idle</span>
+  <span class="lamp l-idle" id="transport" tabindex="0">connecting</span>
+  <button id="helpBtn" class="helpbtn">Demo &amp; help</button>
   <a class="ext" id="mlflowLink" href="http://127.0.0.1:5000" target="_blank" rel="noopener">MLflow ↗</a>
   <a class="ext" id="rayLink" href="http://127.0.0.1:8265" target="_blank" rel="noopener">Ray ↗</a>
 </header>
@@ -35,6 +38,10 @@
   The HTML is read from disk on every request, but the running process still has the old
   Python loaded, so the live panels have no data to show. Restart it:
   <code>python -m pipeline.server</code>
+</div>
+
+<div id="demoBanner" hidden role="status" class="demobanner">
+  <p id="demoBannerText"></p>
 </div>
 
 <main>
@@ -78,6 +85,32 @@
       <em>amounts</em>, on top of whichever partition is chosen — 0.5 is mild, 1.5 an
       order of magnitude. The fleet total is unchanged, so a skewed run is still
       budget-comparable with an unskewed one.</p>
+    <h3 class="subhead">Levers <span class="n" id="leverSupport"></span></h3>
+    <div class="row levers">
+      <div class="lever" data-lever="freeze_round1">
+        <label for="freezeRound1">Freeze round 1</label>
+        <input id="freezeRound1" type="number" min="0" max="23" value="0"></div>
+      <div class="lever" data-lever="server_ema">
+        <label for="serverEma">Server EMA</label>
+        <input id="serverEma" type="number" min="0" max="0.95" step="0.05" value="0"></div>
+      <div class="lever" data-lever="fix_bn_from_round">
+        <label for="fixBnFromRound">FixBN from round</label>
+        <input id="fixBnFromRound" type="number" min="0" value="0"></div>
+      <div class="lever" data-lever="imgsz">
+        <label for="imgsz">Image size</label>
+        <select id="imgsz">
+          <option value="0">profile default</option>
+          <option value="640">640 — measured</option>
+          <option value="768">768 — cost unmeasured</option>
+          <option value="1024">1024 — cost unmeasured</option>
+        </select></div>
+      <div class="lever" data-lever="local_bn" style="grid-column:1/-1">
+        <label class="check"><input type="checkbox" id="localBn">
+          <span>FedBN — each vehicle keeps its own BatchNorm</span></label></div>
+    </div>
+    <div id="leverWarnings"></div>
+    <details id="leverHelp"><summary>What each lever does, and how it misleads</summary>
+      <div id="leverNotes"></div></details>
     <div style="margin-top:var(--s4)">
       <label class="check"><input type="checkbox" id="confirm">
         <span>Confirm the gated stages — download, GPU sanity, federated run.</span></label>
@@ -120,9 +153,15 @@
              aria-label="Aggregate weight checksum by round"></svg>
       </figure>
     </div>
+    <table class="ledger"><caption class="sr-only">Aggregate checksum by round</caption>
+      <thead><tr><th scope="col">Round</th><th scope="col">Aggregate checksum</th>
+      <th scope="col">Δ from previous</th><th scope="col">Verdict</th></tr></thead>
+      <tbody id="heartLedger"></tbody></table>
     <p class="hint">Equal consecutive values mean the global model is not moving — either
       the clients returned the weights they were sent, or no optimizer step happened.
-      Every other metric on this page can look healthy while that is true.</p>
+      Every other metric on this page can look healthy while that is true. The numbers
+      above are read from the server log's own <code>Aggregated parameters with
+      checksum</code> lines, not computed here.</p>
   </div>
 
   <div class="grid two" style="grid-template-columns:1fr 1fr">
@@ -179,7 +218,8 @@
     <div class="grid two" style="grid-template-columns:minmax(220px,300px) 1fr;align-items:center">
       <div class="readouts">
         <div class="readout"><span class="v skel" id="hMap">—</span>
-          <div class="k">holdout mAP50</div></div>
+          <span class="u" id="hMapSpread"></span>
+          <div class="k">holdout mAP50, best round</div></div>
         <div class="readout"><span class="v skel" id="hCeiling">—</span>
           <div class="k">of the centralised ceiling</div></div>
       </div>
@@ -187,6 +227,7 @@
                    aria-label="Global model mAP50 on the shared holdout, by round"></svg></figure>
     </div>
     <p class="hint" id="holdoutNote"></p>
+    <p class="hint" id="holdoutProvenance"></p>
   </div>
 
   <div class="panel" id="perClassPanel" hidden>
@@ -226,6 +267,15 @@
     <figure><svg class="chart" id="divChart" viewBox="0 0 900 190" role="img"
                  aria-label="Signed distance from the fleet mean, per vehicle"></svg></figure>
     <p class="hint" id="divNote"></p>
+  </div>
+
+  <div class="panel" id="profilePanel">
+    <h2>Where the round's seconds went
+      <span class="n"><button id="profileRefresh">Re-read the logs</button></span></h2>
+    <figure><svg class="chart" id="profileChart" viewBox="0 0 900 200" role="img"
+                 aria-label="Seconds per phase for the last federated run"></svg></figure>
+    <ul class="plain" id="profileVerdict"></ul>
+    <p class="hint" id="profileNote"></p>
   </div>
 
   <div class="grid two" style="grid-template-columns:1fr 1fr">
@@ -282,7 +332,50 @@
 
 <!-- ======================================================================== DOCS -->
 <section id="view-docs" class="grid" hidden role="tabpanel" aria-label="Docs">
+  <div class="panel" id="provenancePanel">
+    <h2>Every number this page quotes, and where it was measured</h2>
+    <div id="provenance"></div>
+    <p class="hint">Read from <code>pipeline/measurements.py</code>, whose
+      <code>--check</code> mode re-reads each cited document and fails if a value has
+      drifted out of it. A number on this dashboard with no row here is a bug.</p>
+  </div>
   <div id="docsBody" class="grid"></div>
+</section>
+
+<!-- ==================================================================== SIMULATE -->
+<section id="view-simulate" class="grid" hidden role="tabpanel" aria-label="Simulate">
+  <div class="panel">
+    <h2>Configuration to project <span class="n">nothing here starts a run</span></h2>
+    <div class="row">
+      <div><label for="simVehicles">Vehicles</label>
+        <input id="simVehicles" type="number" min="1" max="12" value="6"></div>
+      <div><label for="simPerVehicle">Images per vehicle</label>
+        <input id="simPerVehicle" type="number" min="1" step="100" value="1400"></div>
+      <div><label for="simRounds">Rounds</label>
+        <input id="simRounds" type="number" min="1" value="6"></div>
+      <div><label for="simEpochs">Local epochs</label>
+        <input id="simEpochs" type="number" min="1" value="4"></div>
+    </div>
+    <div class="row" style="margin-top:var(--s3)">
+      <div><label for="simPartition">Partition</label>
+        <select id="simPartition">
+          <option value="condition">condition — non-IID</option>
+          <option value="random">random — IID control</option>
+          <option value="mixed">mixed — both</option>
+          <option value="dirichlet">dirichlet — tunable α</option>
+        </select></div>
+      <div><label for="simStrategy">Strategy</label>
+        <select id="simStrategy"><option value="fedavg">fedavg</option></select></div>
+      <div><label for="simImgsz">Image size</label>
+        <input id="simImgsz" type="number" min="32" step="32" value="640"></div>
+      <div><label for="simGpuFraction">GPU fraction per client</label>
+        <input id="simGpuFraction" type="number" min="0.05" max="1" step="0.01" value="1"></div>
+    </div>
+    <p class="hint">Change anything. A lever pushed outside the range this project
+      actually measured is <b>refused</b> rather than extrapolated — the refusal names
+      the measurement that would lift it.</p>
+  </div>
+  <div id="simBody" class="grid"></div>
 </section>
 
 <!-- ======================================================================== PLAN -->
@@ -290,6 +383,26 @@
   <div id="planBody" class="grid"></div>
 </section>
 </main>
+
+<!-- The walkthrough. A dialog rather than a tooltip trail: it has to be reachable by
+     keyboard alone, dismissible, and impossible to lose behind the page. -->
+<div id="tour" hidden role="dialog" aria-modal="true" aria-labelledby="tourTitle">
+  <div class="tourcard">
+    <header>
+      <h2 id="tourTitle"></h2>
+      <span class="n" id="tourDots"></span>
+      <button id="tourClose" aria-label="Close the walkthrough">Close</button>
+    </header>
+    <div id="tourBody"></div>
+    <footer>
+      <button id="tourReplay">Replay a recorded run</button>
+      <span class="spacer"></span>
+      <button id="tourPrev">Back</button>
+      <button class="primary" id="tourNext">Next</button>
+    </footer>
+    <p class="hint">← → to step, Esc to leave, <kbd>?</kbd> to reopen.</p>
+  </div>
+</div>
 
 <div id="tip" hidden></div>
 <script type="module" src="/static/js/main.js"></script>

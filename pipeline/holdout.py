@@ -21,6 +21,7 @@ import argparse
 import hashlib
 import json
 import random
+import shutil
 from pathlib import Path
 
 from . import paths, vehicles
@@ -250,6 +251,57 @@ def evaluate_all(imgsz: int = 640, batch: int = 8, device: str = "0") -> list[di
     return rows
 
 
+def best_round(rows: list[dict] | None = None, metric: str = "mAP50") -> dict:
+    """Which round produced the best model, and what the rounds after it cost.
+
+    A long run's result is **not** its last round. This project has measured the
+    opposite twice: a warm-started model scored 0.2582 untrained against 0.2073 after
+    two rounds, and a 1.667x-budget centralised ceiling scored *lower* than a smaller
+    one. Reporting the final checkpoint turns "we trained for longer" into "we reported
+    a worse model", silently.
+
+    Ties go to the EARLIER round. Two rounds of equal score are not equally good --
+    the earlier one cost less GPU, and preferring it makes `wasted_rounds` honest.
+    """
+    rows = (curve().get("rounds") or []) if rows is None else rows
+    scored = [r for r in rows if r.get(metric) is not None]
+    if not scored:
+        return {}
+    best = max(scored, key=lambda r: (r[metric], -(r.get("round") or 0)))
+    last = scored[-1]
+    after = [r for r in scored if (r.get("round") or 0) > (best.get("round") or 0)]
+    return {
+        "metric": metric,
+        "best_round": best.get("round"),
+        "best": best[metric],
+        "best_checkpoint": best.get("checkpoint"),
+        "final_round": last.get("round"),
+        "final": last[metric],
+        # Positive means the run peaked early and then got worse.
+        "regression": round(best[metric] - last[metric], 4),
+        "wasted_rounds": len(after),
+        "rounds_scored": len(scored),
+    }
+
+
+def promote(rows: list[dict] | None = None, metric: str = "mAP50") -> Path | None:
+    """Copy the best-scoring checkpoint to ``global_best.pt``.
+
+    Named for what it is, and deliberately a copy rather than a rename: the per-round
+    checkpoints stay where they are so the curve remains reproducible, and nothing that
+    already reads ``global_round_*.pt`` changes behaviour.
+    """
+    info = best_round(rows, metric)
+    if not info.get("best_checkpoint"):
+        return None
+    src = paths.PROJECT / "checkpoints" / info["best_checkpoint"]
+    if not src.exists():
+        return None
+    dst = src.parent / "global_best.pt"
+    shutil.copy2(src, dst)
+    return dst
+
+
 def curve() -> dict:
     """What the dashboard and the report read. ``{}`` before anything is scored."""
     try:
@@ -269,6 +321,9 @@ def main(argv=None) -> int:
     ap.add_argument("--imgsz", type=int, default=640)
     ap.add_argument("--batch", type=int, default=8)
     ap.add_argument("--device", default="0")
+    ap.add_argument("--promote", action="store_true",
+                    help="copy the best-scoring round to checkpoints/global_best.pt. "
+                         "A long run's result is its best round, not its last")
     args = ap.parse_args(argv)
 
     if not (args.build or args.evaluate):
@@ -310,6 +365,23 @@ def main(argv=None) -> int:
                       f"{c['AP50-95']:>10.4f}{delta:>10}")
             print("\n    Classes absent from the holdout are omitted, not scored zero: "
                   "Ultralytics' `maps` would have given them the fleet average.")
+        info = best_round(rows)
+        if info and info["rounds_scored"] > 1:
+            print(f"\n  Best round: **{info['best_round']}** at {info['best']:.4f} "
+                  f"{info['metric']}; final round {info['final_round']} scored "
+                  f"{info['final']:.4f}.")
+            if info["regression"] > 0:
+                print(f"  The run PEAKED EARLY: the last {info['wasted_rounds']} round(s) "
+                      f"cost {info['regression']:.4f} {info['metric']}. Longer is not "
+                      f"better here — report the best round, not the last one.")
+            else:
+                print(f"  Still improving at the final round; more rounds may pay.")
+            if args.promote:
+                dst = promote(rows)
+                print(f"  promoted: {dst}" if dst else
+                      "  could not promote: the best checkpoint is missing")
+            else:
+                print(f"  Pass --promote to copy it to checkpoints/global_best.pt.")
         print(f"\nwritten: {METRICS_FILE}")
     return 0
 

@@ -47,12 +47,25 @@ class Config:
     strategy: str = "fedavg"         # any key of server_app.STRATEGIES
     proximal_mu: float = 0.0         # FedProx only; >0 turns the proximal term on
     holdout_size: int = 1000         # images no vehicle may train or self-evaluate on
+    # Deliberately NOT `seed`. The holdout is the ruler; the run seed is the thing being
+    # measured. Tying them together meant a seed sweep -- the one experiment whose job
+    # is to hold everything but the seed constant -- rebuilt the holdout for every arm
+    # and compared three numbers taken on three different sets of images.
+    holdout_seed: int = 0
     alpha: float = 0.5               # dirichlet only: smaller = more skewed
     size_skew: float = 0.0           # 0 = every vehicle the same size; ~1 = 10x spread
     per_vehicle_override: int = 0    # 0 = use the profile default
     gpu_fraction: float = 1.0        # Ray's per-client GPU share; <1 packs clients
     cache: str = ""                  # "" | ram | disk -- ultralytics' dataset cache
     local_bn: bool = False           # FedBN: each vehicle keeps its own BatchNorm
+    # Round 1 only, 0 = off. `.load()` cannot transfer the classification convs, so
+    # the head starts part-random and round 1 backpropagates its error into a backbone
+    # that already knew: the warm-started model scored 0.2582 on the holdout untrained
+    # and 0.2073 after two rounds. 10 is the YOLOv8s backbone.
+    freeze_round1: int = 0           # layers frozen on round 1, so the head settles
+    server_ema: float = 0.0          # >0: EMA the aggregate across rounds (FedSWA-style)
+    fix_bn_from_round: int = 0       # >0: FixBN -- pin BatchNorm statistics from that round
+    imgsz_override: int = 0          # 0 = the profile default (320 demo / 640 full)
     ray_address: str | None = None   # set => attach to an existing head node
 
     @property
@@ -71,13 +84,25 @@ class Config:
 
     @property
     def imgsz(self) -> int:
-        """Image size for the *sanity* stage only.
+        """Input resolution, for every stage that has one.
 
-        The federation's size is my-project's DEFAULT_IMAGE_SIZE (640) and is not
-        reachable from here -- changing it would mean editing client_app.py, which
-        this component is not allowed to do. So `demo` speeds things up through
-        fewer images per vehicle, not smaller ones.
+        No longer the sanity stage's alone. The federation's size used to be
+        my-project's ``DEFAULT_IMAGE_SIZE`` and unreachable from here -- the client took
+        it from a module constant, and changing it meant editing ``client_app.py``, which
+        this component may not do. It is now a run-config key the server broadcasts, so
+        one number covers the federation, the clients' own validation, the centralised
+        baseline and the holdout score. ``_cmd_baseline`` and ``_cmd_evaluate`` already
+        passed this value as a flag, so raising it cannot silently produce a federation
+        measured against a ceiling at a different resolution.
+
+        Why it is worth raising: BDD100K frames are 1280x720, and at 640 a traffic light
+        or a rider is sub-20px. Published YOLOv8 results on this dataset are 0.470 mAP50
+        for yolov8n at 640 against 0.625 for yolov8s at 1024 -- and changing it touches no
+        data. Costs activation memory as the square of the size, so the client scales its
+        batch by ``(640/imgsz)**2``.
         """
+        if self.imgsz_override:
+            return self.imgsz_override
         return 320 if self.profile == "demo" else 640
 
     def to_dict(self) -> dict:
@@ -296,27 +321,46 @@ def _cmd_sanity(cfg: Config) -> list[str]:
         data=str(data), imgsz=cfg.imgsz, device="0")]
 
 
-def flwr_executable() -> str:
-    """The flwr launcher belonging to *this* interpreter, not whatever is on PATH.
+#: What `flwr.exe` does, done by the interpreter itself. The console-script shim is a
+#: generated .exe wrapper around exactly this import, and the .exe is the part Windows
+#: Application Control blocks.
+_FLWR_CLI = "from flwr.cli.app import app; app()"
 
-    A shell that a person types into has the venv's Scripts directory on PATH; a
-    non-interactive one started by a script does not, and the stage then died with
-    "[WinError 2] The system cannot find the file specified" -- a message that says
-    nothing about which file. Resolving it next to sys.executable also guarantees the
-    launcher and the interpreter come from the same environment, which matters here:
-    flwr spawns clients with the interpreter it was installed against.
+
+def flwr_launcher() -> list[str]:
+    r"""How to run flwr from *this* interpreter -- as a command list, not a path.
+
+    Resolved next to ``sys.executable`` rather than taken from PATH. A shell a person
+    types into has the venv's Scripts directory on PATH; a non-interactive one started by
+    a script does not, and the stage died with "[WinError 2] The system cannot find the
+    file specified", a message that says nothing about which file. Matching the
+    interpreter also matters in its own right: flwr spawns its clients with the
+    interpreter it was installed against.
+
+    **It returns the module invocation, not the shim, and that is the point.** On
+    2026-09-26 a run halted at the federate stage with
+
+        [WinError 4551] An Application Control policy has blocked this file
+
+    on `Scripts\flwr.exe`. Smart App Control has done this to this project before -- it is
+    what makes conda unusable here (`docs/ENV_WINDOWS.md`) -- and a generated console
+    script is an unsigned executable produced on this machine, which is exactly what those
+    policies stop. `python -c "from flwr.cli.app import app; app()"` is what the shim
+    wraps, runs the same CLI in the same environment, and has no .exe to block.
+
+    The shim's *existence* is still what proves flwr is installed in this environment, so
+    it is still looked for -- it is used as evidence, not as the launcher. Without it the
+    error stays a sentence someone can act on rather than a ModuleNotFoundError from three
+    frames deep.
     """
     here = Path(PY).parent
-    for name in ("flwr.exe", "flwr", "flwr-script.py"):
-        candidate = here / name
-        if candidate.exists():
-            return str(candidate)
-    found = shutil.which("flwr")
-    if found:
-        return found
-    raise RuntimeError(
-        f"flwr not found next to {PY} or on PATH. Install it into this environment: "
-        f"{PY} -m pip install flwr")
+    installed = any((here / name).exists()
+                    for name in ("flwr.exe", "flwr", "flwr-script.py"))
+    if not installed and shutil.which("flwr") is None:
+        raise RuntimeError(
+            f"flwr not found next to {PY} or on PATH. Install it into this environment: "
+            f"{PY} -m pip install flwr")
+    return [PY, "-c", _FLWR_CLI]
 
 
 def _cmd_federate(cfg: Config) -> list[str]:
@@ -338,7 +382,7 @@ def _cmd_federate(cfg: Config) -> list[str]:
         # exists ("When connecting to an existing cluster, num_cpus and num_gpus must
         # not be provided"), so these are only valid when flwr starts Ray itself.
         fed += " init-args-num-gpus=1 init-args-num-cpus=8"
-    return [flwr_executable(), "run", ".", "--stream", "--federation-config", fed,
+    return [*flwr_launcher(), "run", ".", "--stream", "--federation-config", fed,
             "--run-config",
             f'num_server_rounds={cfg.rounds} local_epochs={cfg.local_epochs} '
             f'min_clients={cfg.n_vehicles} fraction_fit=1.0 '
@@ -347,7 +391,9 @@ def _cmd_federate(cfg: Config) -> list[str]:
             f'strategy="{cfg.strategy}" proximal_mu={cfg.proximal_mu} '
             # TOML booleans are lowercase; Python's True is a bare word flwr cannot
             # parse, and the run would die before the first round.
-            f'cache="{cfg.cache}" local_bn={str(cfg.local_bn).lower()}']
+            f'cache="{cfg.cache}" local_bn={str(cfg.local_bn).lower()} '
+            f'freeze_round1={cfg.freeze_round1} server_ema={cfg.server_ema} '
+            f'fix_bn_from_round={cfg.fix_bn_from_round} imgsz={cfg.imgsz}']
 
 
 def _cmd_verify(_: Config) -> list[str]:
@@ -358,15 +404,17 @@ def _check_holdout(cfg: Config) -> Check:
     info = holdout.meta()
     if not info:
         return Check(False, "not yet carved")
-    if info.get("size") != cfg.holdout_size or info.get("seed") != cfg.seed:
+    if info.get("size") != cfg.holdout_size or info.get("seed") != cfg.holdout_seed:
         return Check(False, f"holdout on disk is size={info.get('size')} seed={info.get('seed')}, "
-                            f"config wants size={cfg.holdout_size} seed={cfg.seed}")
-    return Check(True, f"{info.get('linked')} images held out, no vehicle sees them")
+                            f"config wants size={cfg.holdout_size} seed={cfg.holdout_seed}")
+    fp = info.get("fingerprint")
+    return Check(True, f"{info.get('linked')} images held out, no vehicle sees them"
+                       + (f" (fingerprint {fp})" if fp else ""))
 
 
 def _cmd_holdout(cfg: Config) -> list[str]:
     return [PY, "-m", "pipeline.holdout", "--build",
-            "--size", str(cfg.holdout_size), "--seed", str(cfg.seed)]
+            "--size", str(cfg.holdout_size), "--seed", str(cfg.holdout_seed)]
 
 
 def _check_validate(_: Config) -> Check:

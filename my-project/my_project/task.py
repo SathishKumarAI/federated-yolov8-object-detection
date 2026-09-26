@@ -208,12 +208,20 @@ def load_config(config_path):
 # ----------------------------------------------------------
 # 3) GPU-based Batch Size Estimation
 # ----------------------------------------------------------
-def get_optimal_batch_size():
+def get_optimal_batch_size(imgsz: int = DEFAULT_IMAGE_SIZE):
     """
     Attempts to pick a suitable batch size based on GPU free memory.
-    You can override or extend logic as needed for large image datasets.
+
+    Scaled by ``(DEFAULT_IMAGE_SIZE / imgsz) ** 2``, because activation memory grows with
+    the pixel count and this heuristic used to ignore the image size entirely: at
+    ``imgsz=1024`` a batch of 16 is 2.56x the activations it was sized for, and the run
+    dies part-way through a round rather than at its start. Never below 2 -- a batch of 1
+    makes BatchNorm meaningless, and Ultralytics' nominal batch of 64 already means small
+    batches accumulate before stepping. The caller still warns when the arithmetic leaves
+    a shard too small for any optimizer step at all.
     """
     try:
+        batch = 4
         if torch.cuda.is_available():
             # mem_get_info()[0] -> total free memory on current GPU in bytes
             free_memory = torch.cuda.mem_get_info()[0]
@@ -222,12 +230,15 @@ def get_optimal_batch_size():
 
             # Simple heuristic for batch size
             if free_memory > 10e9:
-                return 16
+                batch = 16
             elif free_memory > 6e9:
-                return 8
+                batch = 8
 
-        # Default fallback for CPU or smaller GPU memory
-        return 4
+        scaled = max(2, int(batch * (DEFAULT_IMAGE_SIZE / max(int(imgsz), 1)) ** 2))
+        if scaled != batch:
+            logger.info(f"[Task] Batch {batch} -> {scaled} for imgsz={imgsz}: activation "
+                        f"memory scales with the pixel count, not with the image count.")
+        return scaled
     except Exception as e:
         logger.warning(f"[Task] Batch size detection failed: {str(e)}. Falling back to 4.")
         return 4

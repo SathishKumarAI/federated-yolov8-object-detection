@@ -51,3 +51,19 @@ def test_not_the_old_hardcoded_constant(tmp_path, monkeypatch):
 def test_missing_batch_returns_at_least_one(tmp_path, monkeypatch):
     # A non-existent shard must never yield 0 — that would zero its FedAvg weight.
     assert _task(monkeypatch, tmp_path).count_shard_examples(99999, "train") >= 1
+
+
+def test_the_batch_shrinks_when_the_images_grow():
+    """Activation memory scales with the pixel count, and this heuristic used to read
+    only free VRAM. At imgsz=1024 a batch of 16 is 2.56x the activations it was sized
+    for, and the run dies part-way through a round rather than refusing at its start."""
+    from my_project.task import get_optimal_batch_size
+
+    at_640 = get_optimal_batch_size(640)
+    at_1024 = get_optimal_batch_size(1024)
+    at_320 = get_optimal_batch_size(320)
+
+    assert at_1024 < at_640 <= at_320
+    # Never 1: BatchNorm over a single image is meaningless, and Ultralytics' nominal
+    # batch of 64 already accumulates before it steps.
+    assert at_1024 >= 2

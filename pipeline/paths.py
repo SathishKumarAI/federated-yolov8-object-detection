@@ -76,17 +76,30 @@ def mlflow_uri() -> str:
 def log_dirs() -> list[Path]:
     """Every directory a run's logs can land in.
 
-    New logs only ever land in `my-project/logs` now: `utils/logging_setup` resolves a
-    relative path against the package root rather than against the CWD, so importing a
-    module no longer scatters log files wherever the process happened to be standing.
-    Before that fix, whether a component ran as a direct subprocess (cwd=my-project) or
-    inside a Ray worker (which inherits the head node's cwd) decided where its log
-    went, and looking in only one place made a working federation report as a failure.
+    **`VEHICLE_ROOT / "logs"` is where a federation's logs actually are**, and leaving it
+    out cost three weeks of blind diagnostics. `utils/logging_setup.project_root` resolves
+    a relative log path against `FL_AV_DATA_ROOT` first, and `subprocess_env` sets that to
+    `VEHICLE_ROOT` so my-project reads the simulated fleet -- so the server log follows the
+    data root, not the package. Measured 2026-09-26: every federation since the fleet
+    existed wrote `pipeline/vehicles/logs/server.<pid>.log`, this function listed neither
+    that directory nor anything under it, and so
 
-    `REPO / "logs"` stays in the list because the logs already on disk from before the
-    fix are still readable history. Finding nothing there is the expected state.
+        latest_run_log()      -> my-project/logs/server.33044.log   (Sep 2 13:43)
+        federation_learned()  -> (True, 'weights moved every round: [-600.77, -1021.01]')
+
+    reported PASS from a three-week-old log, today, for every run. The B4 guard -- the one
+    signal this project says to trust above the metrics -- was inert, and it was inert in
+    the direction that passes.
+
+    Ordered with the fleet first, because that is where a current run writes and
+    `latest_run_log` breaks ties by mtime across all of them.
+
+    `PROJECT / "logs"` still holds the logs of anything run with cwd=my-project and no data
+    root -- the sanity stage, the baseline, a bare `pytest`. `REPO / "logs"` is history from
+    before relative paths were anchored at all; finding nothing there is the expected state.
     """
-    return [d for d in (PROJECT / "logs", REPO / "logs") if d.is_dir()]
+    return [d for d in (VEHICLE_ROOT / "logs", PROJECT / "logs", REPO / "logs")
+            if d.is_dir()]
 
 
 def subprocess_env(ray_address: str | None = None, data_root: Path | None = None) -> dict:

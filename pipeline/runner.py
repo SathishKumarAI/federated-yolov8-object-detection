@@ -299,6 +299,38 @@ def build_parser() -> argparse.ArgumentParser:
                     help="ultralytics dataset cache. 'ram' takes JPEG decode off the "
                          "training thread; budget images x imgsz^2 x 3 bytes per "
                          "concurrent client")
+    ap.add_argument("--freeze-round1", type=int, default=0, metavar="N",
+                    help="freeze the first N layers on ROUND 1 ONLY, so the "
+                         "part-random head settles against features the backbone "
+                         "already had instead of pulling them apart. 10 is the "
+                         "YOLOv8s backbone; 0 (default) trains everything, so this "
+                         "changes nothing until it is set. Measured motivation: the "
+                         "warm-started model scored 0.2582 on the holdout untrained "
+                         "and 0.2073 after two rounds")
+    ap.add_argument("--server-ema", type=float, default=0.0, metavar="D",
+                    help="exponentially average the aggregate across rounds at decay D "
+                         "(bias-corrected, so round 1 is the aggregate itself). 0 = off. "
+                         "The fleet otherwise ends every round on an unsmoothed model "
+                         "while the centralised ceiling does not, because ultralytics "
+                         "rebuilds its own EMA per round with updates=0. The clients "
+                         "continue from the smoothed model, so this is a different "
+                         "federation, not a reporting change")
+    ap.add_argument("--fix-bn-from-round", type=int, default=0, metavar="R",
+                    help="FixBN (arXiv:2303.06530): from round R onward every client "
+                         "normalises with the aggregate's BatchNorm statistics and stops "
+                         "updating them. 0 = off. The warm-up is the method -- R=1 pins "
+                         "COCO's initial statistics, which is not it. Unlike --local-bn "
+                         "this leaves ONE global model, so the holdout keeps measuring "
+                         "the model that was trained")
+    ap.add_argument("--imgsz", type=int, default=0, metavar="PX",
+                    help="input resolution for the federation, the clients' own "
+                         "validation, the centralised baseline and the holdout score -- "
+                         "one number, so the comparison stays fair. 0 (default) keeps "
+                         "the profile's 640 (320 for demo). BDD frames are 1280x720, so "
+                         "at 640 a traffic light is sub-20px; published YOLOv8 numbers on "
+                         "this dataset are 0.470 mAP50 at 640 against 0.625 at 1024. "
+                         "Costs activation memory as the square: the client scales its "
+                         "batch by (640/imgsz)^2")
     ap.add_argument("--local-bn", action="store_true",
                     help="FedBN: every vehicle keeps its own BatchNorm and takes the "
                          "rest from the aggregate. Aimed at CONDITION partitioning, "
@@ -321,7 +353,11 @@ def main(argv=None) -> int:
                  strategy=args.strategy, proximal_mu=args.proximal_mu,
                  per_vehicle_override=args.per_vehicle,
                  gpu_fraction=args.gpu_fraction, cache=args.cache,
-                 local_bn=args.local_bn, ray_address=args.ray_address)
+                 local_bn=args.local_bn, freeze_round1=args.freeze_round1,
+                 server_ema=args.server_ema,
+                 fix_bn_from_round=args.fix_bn_from_round,
+                 imgsz_override=args.imgsz,
+                 ray_address=args.ray_address)
     if not 0 < cfg.gpu_fraction <= 1:
         # Ray accepts a fraction above 1 and then schedules nothing, so the run hangs
         # waiting for clients that can never be placed. Caught here, not there.

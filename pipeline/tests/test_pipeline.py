@@ -6,6 +6,7 @@ is the same four criteria the CI simulation-smoke job uses.
 from __future__ import annotations
 
 import json
+import pathlib
 import re
 import shutil
 import subprocess
@@ -266,16 +267,38 @@ def test_federate_stage_scans_for_crashes():
 
 
 @pytest.fixture
+def _flwr_installed(monkeypatch, tmp_path):
+    """Pretend flwr's executables are beside this interpreter.
+
+    `deploy.executable` and `stages.flwr_launcher` both resolve next to `sys.executable`
+    and raise when nothing is there -- correct at runtime, and fatal in CI, which installs
+    pytest and pyyaml only. Four tests that only ever look at the ARGUMENTS a command is
+    built from were failing for want of a binary they never run. Two of them were mine,
+    two came up the stack unnoticed because `main` has never run this job.
+    """
+    bindir = tmp_path / "Scripts"
+    bindir.mkdir()
+    for name in ("flwr", "flower-superlink", "flower-supernode"):
+        (bindir / f"{name}.exe").write_bytes(b"")
+        (bindir / name).write_bytes(b"")
+    fake_python = bindir / "python.exe"
+    fake_python.write_bytes(b"")
+    monkeypatch.setattr(_deploy.sys, "executable", str(fake_python))
+    monkeypatch.setattr(stages, "PY", str(fake_python))
+    return fake_python
+
+
+@pytest.fixture
 def _flwr_launcher(monkeypatch):
     """`_cmd_federate` resolves the flwr launcher, and raises when there is none.
 
     These two tests are about the *arguments* it builds, not about where the binary
-    lives — `test_the_interpreters_scripts_directory_leads_the_path` covers that. So
+    lives — `test_the_flwr_launcher_never_runs_the_blocked_shim` covers that. So
     they failed on any machine without flwr installed, which includes the pipeline CI
     job by design: it installs pytest and pyyaml only, because the pipeline package
     imports torch and ultralytics lazily and its tests then run in under a second.
     """
-    monkeypatch.setattr(stages, "flwr_executable", lambda: "/nonexistent/flwr")
+    monkeypatch.setattr(stages, "flwr_launcher", lambda: ["/nonexistent/python", "-c", "x"])
 
 
 def test_init_args_are_omitted_when_attaching_to_an_existing_ray_cluster(_flwr_launcher):
@@ -373,6 +396,34 @@ def test_fedbn_reaches_the_client_as_a_toml_boolean(_flwr_launcher):
     on = " ".join(stages._cmd_federate(Config(local_bn=True)))
     assert "local_bn=true" in on and "local_bn=True" not in on
     assert "local_bn=false" in " ".join(stages._cmd_federate(Config()))
+
+
+def test_the_round_one_freeze_reaches_the_federation(_flwr_launcher):
+    """The lever is worthless if it stops at the pipeline. Off by default, because a
+    freeze that arrives unasked changes every number this repo has already measured."""
+    on = " ".join(stages._cmd_federate(Config(freeze_round1=10)))
+    assert "freeze_round1=10" in on
+    assert "freeze_round1=0" in " ".join(stages._cmd_federate(Config()))
+
+
+def test_one_image_size_reaches_the_federation_the_baseline_and_the_holdout(_flwr_launcher):
+    """A federation at 1024 scored against a ceiling at 640 is not a comparison. The
+    baseline and evaluate stages already took this as a flag; the federation's own size
+    was the piece that was unreachable, and the docstring of Config.imgsz said so."""
+    cfg = Config(imgsz_override=1024)
+    assert "imgsz=1024" in " ".join(stages._cmd_federate(cfg))
+    assert "1024" in " ".join(stages._cmd_baseline(cfg))
+    assert "1024" in " ".join(stages._cmd_evaluate(cfg))
+
+
+def test_the_image_size_default_still_belongs_to_the_profile(_flwr_launcher):
+    """Off means off: demo stays at 320 and full at 640, so adding the lever moves no
+    number that has already been measured. `Config()` is the demo profile, which is
+    what the 320 is -- and what this test asserted 640 for on its first draft."""
+    assert Config().imgsz == 320
+    assert Config(profile="full").imgsz == 640
+    assert Config(profile="demo", imgsz_override=960).imgsz == 960
+    assert Config(profile="full", imgsz_override=1024).imgsz == 1024
 
 
 def test_a_gpu_fraction_ray_cannot_schedule_is_refused_rather_than_hung(capsys):
@@ -478,7 +529,7 @@ def test_every_file_the_dashboard_imports_is_servable():
             assert (server.STATIC / "js" / imported).is_file(), f"{js.name} imports missing {imported}"
 
 
-def _run_js_check(tmp_path, name: str) -> None:
+def _run_js_check(tmp_path, name: str, extra: dict[str, str] | None = None) -> None:
     """Run one of `pipeline/tests/js/*.mjs` against the real dashboard modules.
 
     The dashboard is served as plain files with no build step, so there is no JS test
@@ -498,6 +549,10 @@ def _run_js_check(tmp_path, name: str) -> None:
     shutil.copytree(server.STATIC / "js", work)
     (work / "package.json").write_text('{"type":"module"}')
     shutil.copy(Path(__file__).parent / "js" / name, work / name)
+    # Fixtures a check needs beside itself. Written by the test rather than committed
+    # when the whole point is that the *Python* half produced them.
+    for fname, text in (extra or {}).items():
+        (work / fname).write_text(text, encoding="utf-8")
 
     # console.assert writes to stderr and does NOT set the exit code, so an assertion
     # that fires would otherwise pass silently -- the exact class of bug this repo
@@ -1212,6 +1267,161 @@ def test_the_model_a_node_caches_on_is_content_addressed():
         "global_last duplicates a round under a name that never changes"
 
 
+def test_the_holdout_does_not_move_when_the_run_seed_does():
+    """The holdout is the ruler; the run seed is what is being measured. They were the
+    same field, so `--preset seeds` -- the one experiment whose whole job is to hold
+    everything but the seed constant -- rebuilt the holdout for every arm and compared
+    three scores taken on three different sets of images."""
+    cmds = [" ".join(stages._cmd_holdout(Config(seed=s))) for s in (0, 1, 2)]
+    assert len(set(cmds)) == 1, f"the holdout command varies with the run seed: {cmds}"
+    assert "--seed 0" in cmds[0]
+
+    # And it still moves when explicitly asked to.
+    assert "--seed 7" in " ".join(stages._cmd_holdout(Config(holdout_seed=7)))
+
+
+def test_the_experiment_driver_passes_through_the_levers_the_runner_has():
+    """experiment.py builds runner command lines by hand, so a lever added to the
+    runner is invisible here until someone adds it twice. Each of these was missing:
+    partition was hardcoded 'condition' (which would have rebuilt an IID fleet as
+    non-IID), gpu_fraction was never passed (every arm ran ~1.9x slower than the same
+    run by hand), and `--all` retrained the centralised ceiling once per arm."""
+    from pipeline import experiment
+
+    cmd = " ".join(experiment.command({"seed": 3}, confirm=True))
+    assert f"--partition {Config.partition}" in cmd, "partition is not the Config default"
+    assert "--gpu-fraction" in cmd
+    assert "--seed 3" in cmd
+
+    swept = " ".join(experiment.command({"partition": "condition"}, confirm=False))
+    assert "--partition condition" in swept, "an explicit arm setting was overridden"
+
+    skipped = " ".join(experiment.command({"skip": "baseline"}, confirm=True))
+    assert "--skip baseline" in skipped
+    assert "--local-bn" in " ".join(experiment.command({"local_bn": True}, confirm=False))
+    assert "--local-bn" not in " ".join(experiment.command({}, confirm=False))
+
+
+# ------------------------------------------------- deployment engine
+from pipeline import deploy as _deploy  # noqa: E402
+
+
+def test_every_supernode_gets_its_own_clientappio_address(_flwr_installed):
+    """Sharing one is the failure that looks like a hang: the second node binds
+    nothing, registers nothing, and the federation waits forever for a client that
+    never arrives."""
+    addrs = []
+    for i in range(5):
+        cmd = _deploy.supernode_cmd(i, "127.0.0.1:9092")
+        addrs.append(cmd[cmd.index("--clientappio-api-address") + 1])
+    assert len(set(addrs)) == 5, f"SuperNodes share an address: {addrs}"
+    assert all(a.startswith("127.0.0.1:") for a in addrs)
+    # Every node dials the same fleet port; only their own API port differs.
+    assert all("--superlink" in _deploy.supernode_cmd(i, "127.0.0.1:9092") for i in range(5))
+
+
+def test_the_fleet_and_control_ports_are_not_the_same(_flwr_installed):
+    """9092 is where SuperNodes dial in, 9093 is where `flwr run` submits. Pointing a
+    SuperNode at the control port fails in a way that reads as a network problem."""
+    assert _deploy.FLEET_PORT != _deploy.CONTROL_PORT
+    link = _deploy.superlink_cmd("127.0.0.1")
+    assert f"127.0.0.1:{_deploy.FLEET_PORT}" in link
+    assert f"127.0.0.1:{_deploy.CONTROL_PORT}" in link
+    # SuperNode API ports must not collide with either.
+    used = {_deploy.FLEET_PORT, _deploy.CONTROL_PORT}
+    assert not used & {_deploy.NODE_PORT_BASE + i for i in range(8)}
+
+
+def test_the_federation_entry_is_appended_not_rewritten(tmp_path, monkeypatch):
+    """~/.flwr/config.toml holds every federation on the machine, including the
+    local-simulation one the rest of this pipeline runs on. Rewriting it would take
+    the simulator down as a side effect of trying the deployment engine."""
+    home = tmp_path
+    monkeypatch.setattr(_deploy.Path, "home", staticmethod(lambda: home))
+    cfg = home / ".flwr" / "config.toml"
+    cfg.parent.mkdir(parents=True)
+    cfg.write_text('[superlink.local-simulation]\naddress = ":local:"\n', encoding="utf-8")
+
+    _deploy.ensure_federation("local-deployment", "127.0.0.1")
+    text = cfg.read_text(encoding="utf-8")
+    assert "[superlink.local-simulation]" in text, "the simulation federation was lost"
+    assert "[superlink.local-deployment]" in text
+    assert "insecure = true" in text
+
+    # Idempotent: running the deployment twice must not duplicate the section.
+    _deploy.ensure_federation("local-deployment", "127.0.0.1")
+    assert cfg.read_text(encoding="utf-8").count("[superlink.local-deployment]") == 1
+
+
+def test_the_run_config_the_deployment_submits_matches_the_simulation_one(
+        _flwr_installed):
+    """The two paths build their own command lines. A lever added to one and not the
+    other means the deployment silently trains a different configuration -- and the
+    keys must all be declared in pyproject or flwr refuses the whole run."""
+    cfg = Config(rounds=3, local_epochs=2, n_vehicles=4, local_bn=True)
+    deployed = " ".join(_deploy.run_cmd("local-deployment", cfg))
+    simulated = " ".join(stages._cmd_federate(cfg))
+
+    declared = (paths.PROJECT / "pyproject.toml").read_text(encoding="utf-8")
+    body = declared.split("[tool.flwr.app.config]", 1)[1].split("[tool.flwr", 1)[0]
+    known = set(re.findall(r"^(\w+) *=", body, re.M))
+
+    for cmdline, label in ((deployed, "deploy"), (simulated, "simulate")):
+        sent = set(re.findall(r"(\w+)=", cmdline.split("--run-config", 1)[1]))
+        assert sent <= known, f"{label} sends undeclared run-config keys: {sorted(sent - known)}"
+    assert "local_bn=true" in deployed and "num_server_rounds=3" in deployed
+
+
+def _rounds(*scores):
+    return [{"round": i, "mAP50": s, "checkpoint": f"global_round_{i}.pt"}
+            for i, s in enumerate(scores, 1)]
+
+
+def test_a_long_run_reports_the_round_it_peaked_at_not_the_one_it_stopped_at():
+    """Measured twice in this project: a warm-started model scored 0.2582 untrained
+    against 0.2073 after two rounds, and a 1.667x-budget ceiling scored LOWER than a
+    smaller one. Reporting the final checkpoint turns "we trained longer" into "we
+    reported a worse model"."""
+    info = _holdout.best_round(_rounds(0.10, 0.31, 0.28, 0.25))
+    assert info["best_round"] == 2 and info["best"] == 0.31
+    assert info["final_round"] == 4 and info["final"] == 0.25
+    assert info["regression"] == 0.06, "the cost of the rounds after the peak"
+    assert info["wasted_rounds"] == 2
+
+
+def test_a_run_still_improving_reports_no_regression():
+    info = _holdout.best_round(_rounds(0.10, 0.20, 0.30))
+    assert info["best_round"] == 3 and info["wasted_rounds"] == 0
+    assert info["regression"] == 0.0
+
+
+def test_a_tie_goes_to_the_earlier_round():
+    """Two rounds of equal score are not equally good: the earlier one cost less GPU,
+    and preferring it is what makes `wasted_rounds` mean anything."""
+    info = _holdout.best_round(_rounds(0.10, 0.30, 0.30))
+    assert info["best_round"] == 2
+    assert info["wasted_rounds"] == 1
+
+
+def test_best_round_survives_a_curve_with_nothing_in_it():
+    assert _holdout.best_round([]) == {}
+    assert _holdout.best_round([{"round": 1}]) == {}, "a row with no score is not a best"
+
+
+def test_promote_copies_rather_than_moves_so_the_curve_stays_reproducible(tmp_path, monkeypatch):
+    ckpts = tmp_path / "checkpoints"
+    ckpts.mkdir()
+    for i in (1, 2, 3):
+        (ckpts / f"global_round_{i}.pt").write_bytes(bytes([i]))
+    monkeypatch.setattr(_holdout.paths, "PROJECT", tmp_path)
+
+    dst = _holdout.promote(_rounds(0.1, 0.9, 0.4))
+    assert dst is not None and dst.name == "global_best.pt"
+    assert dst.read_bytes() == bytes([2]), "promoted the wrong round"
+    # The per-round checkpoints must survive: the curve is measured from them.
+    assert all((ckpts / f"global_round_{i}.pt").exists() for i in (1, 2, 3))
+
+
 def test_the_holdout_stage_runs_before_the_fleet_stage():
     """Order is load-bearing: a holdout carved afterwards is already in someone's
     val split."""
@@ -1606,19 +1816,74 @@ def test_a_line_the_console_cannot_encode_does_not_kill_the_output_thread(monkey
 def test_flwr_is_resolved_next_to_the_interpreter_not_from_path(monkeypatch, tmp_path):
     """A shell a person types into has the venv on PATH; one started by a script does
     not, and the stage died with '[WinError 2] The system cannot find the file
-    specified' -- which names no file."""
+    specified' -- which names no file.
+
+    The shim next to the interpreter is now the *evidence* that flwr is installed here
+    rather than the thing that runs: Application Control blocks the generated .exe. What
+    must still hold is that the environment is the interpreter's own, not PATH's.
+    """
     fake = tmp_path / "flwr.exe"
     fake.write_bytes(b"")
-    monkeypatch.setattr(stages, "PY", str(tmp_path / "python.exe"))
-    assert stages.flwr_executable() == str(fake)
-    assert stages._cmd_federate(Config())[0] == str(fake)
+    fake_py = tmp_path / "python.exe"
+    monkeypatch.setattr(stages, "PY", str(fake_py))
+    monkeypatch.setattr(stages.shutil, "which", lambda _name: "/another/env/bin/flwr")
+
+    assert stages.flwr_launcher()[0] == str(fake_py),         "another environment's flwr on PATH must never win"
+    assert stages._cmd_federate(Config())[0] == str(fake_py)
 
 
 def test_a_missing_flwr_says_which_environment_to_install_it_into(monkeypatch, tmp_path):
+    """The shim's existence is what proves flwr is installed in this environment, even
+    though it is not what gets run. Without the check the failure would be a
+    ModuleNotFoundError from three frames inside typer instead of a sentence."""
     monkeypatch.setattr(stages, "PY", str(tmp_path / "python.exe"))
     monkeypatch.setattr(stages.shutil, "which", lambda _: None)
     with pytest.raises(RuntimeError, match="pip install flwr"):
-        stages.flwr_executable()
+        stages.flwr_launcher()
+
+
+def test_the_fleets_log_directory_is_searched():
+    """A federation's logs follow the DATA ROOT, not the package.
+
+    `subprocess_env` sets `FL_AV_DATA_ROOT` to the fleet so my-project reads the simulated
+    vehicles, and `logging_setup.project_root` resolves a relative log path against that
+    first. So the server log lands in `pipeline/vehicles/logs/`, and for as long as
+    `log_dirs()` omitted it, `latest_run_log()` returned the newest log from BEFORE the
+    fleet existed -- a Sept 2 file, in September's numbers, reported as PASS in every run
+    since. The B4 guard was inert in the direction that passes.
+    """
+    assert (paths.VEHICLE_ROOT / "logs") in [*paths.log_dirs(), paths.VEHICLE_ROOT / "logs"]
+    # Ordered fleet-first: latest_run_log breaks ties by mtime across all the dirs, and the
+    # fleet is where a current run writes.
+    if (paths.VEHICLE_ROOT / "logs").is_dir():
+        assert paths.log_dirs()[0] == paths.VEHICLE_ROOT / "logs"
+
+
+def test_no_federation_log_on_disk_is_outside_the_searched_directories():
+    """The general form, so the next relocation is caught by the suite and not by a
+    three-week-old number in a report.
+
+    Any `server*.log` that recorded an aggregation IS a federation log. If one exists in a
+    directory `log_dirs()` does not cover, every reader -- verify, the report, the dashboard
+    ledger -- is blind to that run.
+    """
+    searched = {d.resolve() for d in paths.log_dirs()}
+    stray = []
+    for f in paths.REPO.rglob("server*.log"):
+        if ".claude" in f.parts or ".git" in f.parts:
+            continue        # another agent's worktree is not this checkout's business
+        try:
+            if "Aggregated parameters with checksum" not in f.read_text(errors="replace"):
+                continue
+        except OSError:
+            continue
+        if f.parent.resolve() not in searched:
+            stray.append(f.relative_to(paths.REPO))
+    if not stray and not any((d / "x").parent.is_dir() for d in searched):
+        pytest.skip("no logs on disk to check -- expected on a fresh checkout and in CI")
+    assert not stray, (
+        f"federation logs exist where nothing reads them: {stray}. Add the directory to "
+        f"paths.log_dirs(), or the checksum criterion will judge an older run.")
 
 
 def test_every_subprocess_is_told_to_write_utf8():
@@ -1630,6 +1895,25 @@ def test_every_subprocess_is_told_to_write_utf8():
     assert env["PYTHONIOENCODING"] == "utf-8"
     assert env["PYTHONUTF8"] == "1"
     assert env["FLWR_DISABLE_RUNTIME_DEPENDENCY_INSTALLATION"] == "1"
+
+
+def test_the_flwr_launcher_never_runs_the_blocked_shim(_flwr_installed):
+    r"""A run halted at the federate stage with
+
+        [WinError 4551] An Application Control policy has blocked this file
+
+    on `Scripts\flwr.exe`. A console script is an unsigned executable generated on this
+    machine, which is what those policies stop -- Smart App Control has already made conda
+    unusable here for the same reason. The interpreter runs the same CLI with no .exe to
+    block, so the launcher must be an interpreter invocation and must stay one."""
+    cmd = stages.flwr_launcher()
+
+    assert cmd[0] == str(_flwr_installed), "the launcher must be this interpreter"
+    assert cmd[1] == "-c" and "flwr.cli.app" in cmd[2]
+    # By basename, not by substring: pytest's tmp_path is named after the test, so the
+    # fake interpreter's own path contains "flwr" and a substring check trips on itself.
+    assert not any(pathlib.Path(str(part)).name.lower().startswith("flwr.")
+                   for part in cmd), "the shim is the thing that gets blocked"
 
 
 def test_the_interpreters_scripts_directory_leads_the_path():
@@ -1723,13 +2007,31 @@ def test_the_checksum_criterion_judges_one_run_not_a_pile_of_them(tmp_path):
 
 
 def test_no_document_promises_a_command_with_a_mangled_path():
-    """Twice now a backslash escape turned .\scripts\run_pipeline.ps1 into a
-    carriage return mid-path, leaving a headline command that cannot be run."""
-    broken = b".\scripts\rrun_pipeline.ps1".replace(b"\rrun", b"\run")
-    for doc in REPO.glob("*.md"):
-        assert broken not in doc.read_bytes(), doc.name
-    for doc in (REPO / "docs").glob("*.md"):
-        assert broken not in doc.read_bytes(), doc.name
+    r"""A backslash escape keeps eating part of a Windows path in a document.
+
+    Three times now. Twice it was `.\scripts\run_pipeline.ps1` with the `\r` collapsed into a
+    carriage return; on 2026-09-26 it was `Scripts\flwr.exe` with the `\f` collapsed into a
+    formfeed -- in the environment-trap note about that very executable. Both leave a
+    headline command nobody can run, and neither shows up in a rendered diff.
+
+    So this no longer looks for one known string. No document may contain a control
+    character at all, and the search is recursive: the formfeed landed in
+    `docs/ENV_WINDOWS.md` and a sibling in `docs/findings/`, which two flat globs missed.
+    """
+    # Built byte by byte: a literal with the escapes in it is how this file earned its
+    # own SyntaxWarning, in the test about collapsed escapes.
+    broken = b"." + bytes([92]) + b"scripts" + bytes([13]) + b"un_pipeline.ps1"
+    # Formfeed, vertical tab, backspace, bell, escape: what a collapsed \f, \v, \b, \a or
+    # \e leaves behind. Tab and newline are excluded -- both are legitimate in Markdown.
+    control = bytes([0x0c, 0x0b, 0x08, 0x07, 0x1b])
+
+    for doc in [*REPO.glob("*.md"), *(REPO / "docs").rglob("*.md")]:
+        body = doc.read_bytes()
+        assert broken not in body, doc.name
+        found = [f"0x{c:02x}" for c in control if bytes([c]) in body]
+        assert not found, (
+            f"{doc.relative_to(REPO)} contains {', '.join(found)} -- a backslash escape "
+            f"was collapsed into a control character, so a path in it is unrunnable")
 
 
 def test_a_stage_can_be_skipped_from_the_full_chain():
@@ -2250,3 +2552,867 @@ def test_the_profiler_says_which_lever_the_measurement_points_at():
     concurrent_overhead = {"episodes": 6, "max_concurrent": 3, "train_share": 0.40}
     lines = " ".join(_profile.verdict(concurrent_overhead))
     assert "CONCURRENT" in lines and "AROUND-TRAINING" in lines
+
+
+def test_bdd_box_reconstruction_keeps_bikes_and_motors():
+    """BDD calls them `bike` and `motor`; this project's classes are `bicycle` and
+    `motorcycle`. Miss the aliases and the spot-check reports "one box too many" for
+    every image containing either, which is a checker bug wearing a data bug's
+    clothes -- it did exactly that on its first run. `lane` and `drivable area` carry
+    poly2d and must stay out."""
+    from pipeline import spotcheck
+
+    rec = {"labels": [
+        {"category": "bike", "box2d": {"x1": 0, "y1": 0, "x2": 1280, "y2": 720}},
+        {"category": "motor", "box2d": {"x1": 640, "y1": 360, "x2": 1280, "y2": 720}},
+        {"category": "lane", "poly2d": [[0, 0]]},
+        {"category": "drivable area", "poly2d": [[0, 0]]},
+    ]}
+    boxes = spotcheck._boxes_from_bdd(rec, 1280, 720)
+
+    assert [b[0] for b in boxes] == [spotcheck.CID["bicycle"], spotcheck.CID["motorcycle"]], \
+        "the two aliases must map onto this project's class ids, and nothing else may"
+    assert boxes[0][1:] == (0.5, 0.5, 1.0, 1.0), "a full-frame box is centre 0.5, size 1.0"
+    assert boxes[1][1:] == (0.75, 0.75, 0.5, 0.5)
+
+
+# ----------------------------------------------------- pushed state, not polled
+from pipeline import statestream as _stream  # noqa: E402
+
+#: One run's worth of snapshots, shaped like `/api/state`: a list that grows, a nested
+#: number that moves, a key that appears and then vanishes, and a value that goes null.
+#: Every awkward case here is one the diff has to survive, not one it happens to meet.
+SNAPSHOT_STEPS = [
+    {"busy": False, "current": None, "fleet": [],
+     "live": {"checksums": [], "rounds_done": 0, "training_now": None},
+     "gpu": {"util_pct": None, "history": []}},
+    {"busy": True, "current": "fleet", "fleet": [{"vid": 1, "condition": "night"}],
+     "live": {"checksums": [], "rounds_done": 0, "training_now": None},
+     "gpu": {"util_pct": 4, "history": [{"util": 4}]}},
+    {"busy": True, "current": "federate", "fleet": [{"vid": 1, "condition": "night"}],
+     "live": {"checksums": [-1032.5395936965942], "rounds_done": 1, "training_now": "1"},
+     "gpu": {"util_pct": 27, "history": [{"util": 4}, {"util": 27}]}},
+    {"busy": True, "current": "federate", "fleet": [{"vid": 1, "condition": "night"}],
+     "live": {"checksums": [-1032.5395936965942, -2646.913425683975], "rounds_done": 2,
+              "training_now": "1", "no_optimizer_steps": 0},
+     "gpu": {"util_pct": 31, "history": [{"util": 4}, {"util": 27}, {"util": 31}]}},
+    {"busy": False, "current": None, "fleet": [{"vid": 1, "condition": "night"}],
+     "live": {"checksums": [-1032.5395936965942, -2646.913425683975], "rounds_done": 2,
+              "training_now": None},
+     "gpu": {"util_pct": None, "history": [{"util": 4}, {"util": 27}, {"util": 31}]}},
+]
+
+
+def _replay(steps):
+    """(frames, final) -- what the wire carried and what the client ended up holding."""
+    seq, client, frames = _stream.Sequence(), None, []
+    for i, step in enumerate(steps):
+        raw = seq.open(step) if i == 0 else seq.update(step)
+        if raw is None:
+            continue
+        payload = json.loads(raw.decode().split("data: ", 1)[1])
+        if "state" in payload:
+            client = payload["state"]
+        else:
+            client = _stream.apply(client, payload["patch"])
+            frames.append({"seq": payload["seq"], "patch": payload["patch"], "step": i})
+        assert client == step, f"step {i}: the client holds {client}, not {step}"
+    return frames, client
+
+
+def test_a_state_patch_never_drops_a_change():
+    """The failure this guards is the quiet one.
+
+    A diff that misses a key still produces a well-formed stream; the browser just
+    renders a stale number and keeps looking live. That is every entry in this repo's
+    silent-failures table, moved into the transport. So the client's copy is compared
+    against the server's snapshot after *every* frame, not only at the end.
+    """
+    frames, client = _replay(SNAPSHOT_STEPS)
+    assert client == SNAPSHOT_STEPS[-1]
+    assert [f["seq"] for f in frames] == list(range(1, len(frames) + 1)), "sequence must be dense"
+    assert len(frames) == len(SNAPSHOT_STEPS) - 1
+
+
+def test_a_patch_carries_only_what_moved():
+    """The whole reason for the diff: an unchanged subtree must not be on the wire."""
+    seq = _stream.Sequence()
+    seq.open(SNAPSHOT_STEPS[1])
+    payload = json.loads(seq.update(SNAPSHOT_STEPS[2]).decode().split("data: ", 1)[1])
+    moved = payload["patch"][1]
+    assert set(moved) == {"current", "live", "gpu"}, moved
+    assert "fleet" not in moved and "busy" not in moved
+    # And inside `live`, only the three fields that actually changed.
+    assert set(moved["live"][1]) == {"checksums", "rounds_done", "training_now"}
+
+
+def test_an_unchanged_snapshot_costs_nothing_on_the_wire():
+    """An idle server used to ship the whole fleet, stage table and metrics every 2 s."""
+    seq = _stream.Sequence()
+    seq.open(SNAPSHOT_STEPS[0])
+    same = json.loads(json.dumps(SNAPSHOT_STEPS[0]))    # equal, not identical
+    assert seq.update(same) is None
+    assert seq.seq == 0, "an empty diff must not burn a sequence number"
+
+
+def test_skipping_a_patch_corrupts_the_state_so_the_guard_has_teeth():
+    """If dropping a frame were harmless, every assertion above would prove nothing."""
+    frames, _ = _replay(SNAPSHOT_STEPS)
+    broken = SNAPSHOT_STEPS[0]
+    for f in frames[1:]:                                # frame 1 deliberately lost
+        broken = _stream.apply(broken, f["patch"])
+    assert broken != SNAPSHOT_STEPS[-1]
+
+
+def test_the_browser_applies_the_patches_the_server_produced(tmp_path):
+    """Two implementations of one wire format, checked against each other.
+
+    stream.js re-implements `statestream.apply` because the browser has to. Nothing
+    but this stops the two drifting, and a drift shows up as a panel that is subtly
+    and permanently out of date.
+    """
+    frames, _ = _replay(SNAPSHOT_STEPS)
+    fixture = json.dumps({"steps": SNAPSHOT_STEPS, "frames": frames})
+    _run_js_check(tmp_path, "state_patch.mjs", extra={"patches.json": fixture})
+
+
+def test_statestream_self_check():
+    _stream.demo()
+
+
+def _read_frame(resp, tries: int = 400):
+    """The next real SSE frame, skipping the keep-alive comments."""
+    event, data = "message", None
+    for _ in range(tries):
+        line = resp.readline().decode()
+        if line in ("", "\n", "\r\n"):
+            if data is not None:
+                return event, json.loads(data)
+            continue                                    # blank after a ping
+        if line.startswith(":"):
+            continue
+        if line.startswith("event:"):
+            event = line[6:].strip()
+        elif line.startswith("data:"):
+            data = line[5:].strip()
+    raise AssertionError("no SSE frame arrived")
+
+
+def _serve(monkeypatch, fake):
+    """A real server on an ephemeral port, its snapshot replaced by `fake`."""
+    import threading as _t
+    from http.server import ThreadingHTTPServer
+
+    from pipeline import server as srv
+
+    monkeypatch.setattr(srv.STATE, "snapshot", lambda cfg: json.loads(json.dumps(fake)))
+    srv.STATE._snap, srv.STATE._snap_at = None, 0.0
+    httpd = ThreadingHTTPServer(("127.0.0.1", 0), srv.Handler)
+    _t.Thread(target=httpd.serve_forever, daemon=True).start()
+    return srv, httpd
+
+
+def test_the_state_stream_sends_a_snapshot_then_numbered_diffs(monkeypatch):
+    """The route itself, over a real socket. Reading the code is not evidence."""
+    import http.client
+
+    fake = {"busy": False, "current": None, "fleet": [{"vid": 1}],
+            "live": {"checksums": [], "rounds_done": 0}}
+    srv, httpd = _serve(monkeypatch, fake)
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", httpd.server_address[1], timeout=10)
+        conn.request("GET", "/api/stream")
+        resp = conn.getresponse()
+        assert resp.status == 200
+        assert resp.headers["Content-Type"] == "text/event-stream"
+
+        kind, payload = _read_frame(resp)
+        assert kind == "snapshot" and payload["seq"] == 0
+        assert payload["state"] == fake
+        client = payload["state"]
+
+        fake["live"]["checksums"] = [-1032.5395936965942]
+        fake["live"]["rounds_done"] = 1
+        srv.STATE._snap_at = 0.0                        # let the cache see the change
+        # A bus event is what wakes the loop in a real run; without one the patch would
+        # still arrive, just a STREAM_TICK later.
+        srv.STATE.bus.publish({"kind": "signal", "signal": "aggregate_checksum",
+                               "value": -1032.5395936965942})
+
+        kind, payload = _read_frame(resp)
+        assert kind == "patch" and payload["seq"] == 1
+        assert set(payload["patch"][1]) == {"live"}, "the fleet did not move; do not send it"
+        assert _stream.apply(client, payload["patch"]) == fake
+        conn.close()
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+
+
+def test_api_state_still_answers_for_anything_that_wants_the_whole_thing(monkeypatch):
+    """The stream is an optimisation. Removing the route it optimises would make a CLI
+    user's `curl /api/state` -- and stream.js's own resync path -- silently 404."""
+    import http.client
+
+    fake = {"busy": False, "live": {"checksums": [1.0]}}
+    _, httpd = _serve(monkeypatch, fake)
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", httpd.server_address[1], timeout=10)
+        conn.request("GET", "/api/state", headers={"Connection": "close"})
+        assert json.loads(conn.getresponse().read()) == fake
+        conn.close()
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+
+
+def test_one_snapshot_serves_every_watcher(monkeypatch):
+    """The push loop asks for state far more often than the old poll did. If each ask
+    re-read every client log, the holdout curve and the baseline, watching the page
+    would cost more than running it."""
+    from pipeline import server as srv
+
+    calls = []
+    monkeypatch.setattr(srv.STATE, "snapshot", lambda cfg: calls.append(1) or {"n": len(calls)})
+    srv.STATE._snap, srv.STATE._snap_at = None, 0.0
+    for _ in range(20):
+        srv.STATE.current(Config())
+    assert len(calls) == 1, f"recomputed {len(calls)} times inside one TTL"
+
+
+# ------------------------------------------------- measured numbers, with provenance
+from pipeline import measurements as _meas  # noqa: E402
+
+
+def test_every_measurement_still_matches_the_document_it_cites():
+    """A dashboard that cites a doc which no longer says that is worse than one that
+    cites nothing: it launders a stale number through a real filename."""
+    problems = _meas.drift()
+    assert not problems, "\n".join(problems)
+
+
+def test_no_measurement_ships_without_its_provenance():
+    """The rule the module exists to enforce. A record with an empty source is a guess
+    wearing a measurement's clothes, and the UI would print it with a citation."""
+    for rec in _meas.RECORDS:
+        for field in ("id", "label", "unit", "source", "quote", "note", "measured_on"):
+            assert rec.get(field), f"{rec.get('id')!r} has no {field}"
+        assert rec["value"] is not None, rec["id"]
+        assert len(rec["note"]) > 40, f"{rec['id']}: the note must say how it misleads"
+    ids = [r["id"] for r in _meas.RECORDS]
+    assert len(ids) == len(set(ids)), "duplicate measurement id"
+
+
+def test_the_plan_and_the_measurement_table_cannot_disagree():
+    """The cost constants used to live in plan.py only. The projection panel and the
+    report need the same two numbers, and a measured constant in three files is a
+    constant that will disagree with itself."""
+    from pipeline import plan as _plan
+
+    assert _plan.SECONDS_PER_KVISIT == _meas.value("seconds_per_kvisit")
+    assert _plan.WH_PER_KVISIT == _meas.value("wh_per_kvisit")
+
+
+def test_the_warm_start_list_is_a_subset_of_the_label_set():
+    """The per-class panel divides the 13 classes into warm-started and cold. A name
+    that matches nothing would silently move a class into the wrong group, which is the
+    one thing that panel exists to get right."""
+    assert set(_meas.WARM_STARTED_CLASSES) <= set(_meas.BDD_CLASSES)
+    assert len(_meas.BDD_CLASSES) == 13
+    assert set(_meas.UNWARMED_CLASSES) == {"rider", "trailer", "other person",
+                                           "other vehicle"}
+
+
+def test_a_missing_measurement_raises_rather_than_defaulting():
+    """`value()` returning None on a typo would put a blank where a +/- belongs, and
+    the panel would look finished."""
+    with pytest.raises(KeyError):
+        _meas.value("no_such_measurement")
+
+
+def test_the_retention_headline_is_the_two_numbers_it_claims_to_be():
+    """0.845 is not an independent measurement; it is 0.4173 / 0.4936. If those three
+    records ever stop agreeing, one of them was edited without the others."""
+    got = _meas.value("federated_map50") / _meas.value("centralised_map50")
+    assert abs(got - _meas.value("retained")) < 0.001, got
+
+
+def test_the_measurement_table_is_served_over_http(monkeypatch):
+    import http.client
+
+    _, httpd = _serve(monkeypatch, {"busy": False})
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", httpd.server_address[1], timeout=10)
+        conn.request("GET", "/api/measurements", headers={"Connection": "close"})
+        got = json.loads(conn.getresponse().read())
+        assert {r["id"] for r in got["records"]} == {r["id"] for r in _meas.RECORDS}
+        assert got["classes"]["unwarmed"] == _meas.UNWARMED_CLASSES
+        conn.close()
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+
+
+def test_the_profile_route_carries_the_verdict_not_only_the_seconds(monkeypatch):
+    """Phase 0 exists to choose between two opposite fixes. Serving the breakdown
+    without the verdict hands that choice back to whoever is reading the page."""
+    import http.client
+
+    from pipeline import server as srv
+
+    fake = {"server_log": "server.1.log", "client_logs": [], "wall_s": 100.0,
+            "phases": {"train": 85.0}, "unaccounted_s": 15.0, "episodes": 6,
+            "max_concurrent": 1, "train_share": 0.85}
+    monkeypatch.setattr(srv.profiler, "profile", lambda *a, **k: dict(fake))
+    _, httpd = _serve(monkeypatch, {"busy": False})
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", httpd.server_address[1], timeout=10)
+        conn.request("GET", "/api/profile", headers={"Connection": "close"})
+        got = json.loads(conn.getresponse().read())
+        assert "SERIALISED" in " ".join(got["verdict"])
+        assert "IN-TRAINING" in " ".join(got["verdict"])
+        conn.close()
+
+        # And an unprofilable run says so instead of inventing a breakdown of zeros.
+        monkeypatch.setattr(srv.profiler, "profile", lambda *a, **k: {"error": "no server log"})
+        conn = http.client.HTTPConnection("127.0.0.1", httpd.server_address[1], timeout=10)
+        conn.request("GET", "/api/profile", headers={"Connection": "close"})
+        got = json.loads(conn.getresponse().read())
+        assert got == {"error": "no server log"} and "verdict" not in got
+        conn.close()
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+
+
+def test_the_insight_panels_never_call_a_stuck_fleet_moving(tmp_path):
+    """The ledger's verdict overrides every other number on the page. Executed, not
+    read: `647.578 -> 647.578` is the B4 bug, and it must not render as progress."""
+    _run_js_check(tmp_path, "insight_panels.mjs")
+
+
+def test_no_panel_prints_an_em_dash_where_a_measurement_is_missing():
+    """A dash reads as data. Every view module that shows a value the server may not
+    have uses `unknown()`, which says "not measured" and why.
+
+    Scoped to the value slots this rule is about -- a readout, a big number, a
+    per-class cell -- not to prose, which is allowed its punctuation.
+    """
+    js = (REPO / "pipeline" / "static" / "js")
+    offenders = {}
+    for path in sorted(js.glob("*.js")):
+        src = path.read_text(encoding="utf-8")
+        # `$("x").textContent = ... "—"` is the shape that puts a dash in a value slot.
+        for m in re.finditer(r'\$\("(\w+)"\)\.(?:textContent|innerHTML)\s*=[^;\n]*"—"', src):
+            offenders.setdefault(path.name, []).append(m.group(1))
+    assert not offenders, (f"these value slots fall back to an em dash instead of "
+                          f"unknown(): {offenders}")
+    # Guard the guard: the regex has to be able to match at all.
+    assert re.search(r'\$\("(\w+)"\)\.(?:textContent|innerHTML)\s*=[^;\n]*"—"',
+                     '$("x").textContent = a ? b : "—";')
+
+
+def test_every_dashboard_module_loads(tmp_path):
+    """No build step means nothing checks that a module parses until a browser loads it.
+
+    A module that throws at import time takes the whole page down and the failure looks
+    like panels that simply never fill in -- the page renders, the chrome is there, and
+    nothing says why. Executed under node against a DOM that answers but holds nothing.
+    """
+    _run_js_check(tmp_path, "modules_load.mjs")
+
+
+# ------------------------------------------- projecting a run before it costs anything
+from pipeline import plan as _plan  # noqa: E402
+
+
+def _projection(**kw):
+    imgsz = kw.pop("imgsz", None)
+    return _plan.project(Config(**kw), imgsz)
+
+
+def _row(pr, name):
+    return next(r for r in pr["projections"] if r["name"] == name)
+
+
+def test_the_projection_reproduces_the_run_it_was_calibrated_on():
+    """The reference configuration must come back out as the numbers that went in.
+
+    Not a tautology: the projection scales by resolution, divides by the packing
+    speed-up and multiplies out the budget, and any one of those being wrong shows up
+    here as a run that took a different length of time than it actually did.
+    """
+    ref = _plan.REFERENCE_RUN
+    pr = _projection(profile="full", n_vehicles=ref["vehicles"],
+                     per_vehicle_override=ref["per_vehicle"], rounds=ref["rounds"],
+                     local_epochs=ref["local_epochs"], partition=ref["partition"],
+                     gpu_fraction=ref["gpu_fraction"])
+    assert pr["budget"]["image_visits"] == 201_600
+    assert _row(pr, "wall clock")["value"] == ref["seconds"]
+    assert _row(pr, "energy")["value"] == ref["wh"]
+    assert pr["differs_from_reference"] == [], pr["differs_from_reference"]
+
+
+def test_a_resolution_nobody_timed_is_refused_not_extrapolated():
+    """imgsz = 1024 is item 2 of the accuracy programme and has never been run here.
+
+    A projected wall clock for it would be pixel-count arithmetic wearing a
+    measurement's clothes -- and it is the number someone would use to decide whether
+    to spend the night on it.
+    """
+    pr = _projection(profile="full", per_vehicle_override=1400, imgsz=1024)
+    assert _row(pr, "wall clock")["status"] == "refused"
+    assert _row(pr, "wall clock")["value"] is None
+    assert _row(pr, "energy")["status"] == "refused"
+    refused = {r["lever"] for r in pr["refusals"]}
+    assert "imgsz" in refused
+    needed = next(r for r in pr["refusals"] if r["lever"] == "imgsz")["needed"]
+    assert "timed run" in needed, "a refusal must say what would lift it"
+    # And it says the value is not even reachable from this component.
+    assert pr["imgsz_reachable"] is False
+    assert "client_app.py" in pr["imgsz_note"]
+
+
+def test_a_packing_ray_was_never_run_at_is_refused():
+    """0.33, 0.5 and 1.0 are the three measured settings. 0.4 is a guess, and the
+    guess would land in the wall clock as if it were measured."""
+    pr = _projection(profile="full", per_vehicle_override=1400, gpu_fraction=0.4)
+    assert {r["lever"] for r in pr["refusals"]} == {"gpu_fraction"}
+    assert _row(pr, "peak VRAM")["status"] == "refused"
+
+
+def test_a_shard_size_outside_the_measured_range_is_refused():
+    pr = _projection(profile="full", per_vehicle_override=20000)
+    assert "per_vehicle" in {r["lever"] for r in pr["refusals"]}
+
+
+def test_vram_is_a_bracket_between_two_measurements_not_a_fitted_line():
+    """5 087 MiB at 1 400 and ~15 900 at 6 308 are not two points on a line -- the
+    300-image demo also peaks near 5 GB, so the curve is flat then steep and its shape
+    was never measured. A single interpolated number would be inventing that shape."""
+    small = _projection(profile="full", per_vehicle_override=1400)
+    assert small["vram"]["per_client_lo_mib"] == small["vram"]["per_client_hi_mib"] == 5087
+    assert small["vram"]["fits"] is True
+
+    between = _projection(profile="full", per_vehicle_override=4000)
+    v = between["vram"]
+    assert v["per_client_lo_mib"] == 5087 and v["per_client_hi_mib"] == 15900
+    assert "NOT measured" in v["how"], "the bracket must say the shape is unknown"
+
+
+def test_packing_three_clients_onto_a_full_shard_is_called_out():
+    """This is the setting that killed a run: three actors, 94.9-96.6 % of VRAM, and
+    the allocation that failed was on the host."""
+    pr = _projection(profile="full", per_vehicle_override=6308, gpu_fraction=0.33)
+    v = pr["vram"]
+    assert v["clients_on_the_card"] == 3
+    assert v["fits"] is False, "3 x 15 900 MiB cannot fit in 16 303"
+
+
+def test_no_projection_claims_an_accuracy():
+    """One configuration's end-to-end result is recorded. Projecting another's mAP from
+    it would be the most confident-looking fabricated number this page could show."""
+    pr = _projection(profile="full", per_vehicle_override=1400, rounds=3)
+    for row in pr["projections"]:
+        assert "mAP" not in row["name"] or "resolve" in row["name"], row["name"]
+    assert "No mAP is projected" in pr["accuracy_note"]
+    # What it offers instead: the size of difference the run could resolve at all.
+    assert _row(pr, "smallest difference this run could resolve")["value"] == \
+        _meas.value("noise_floor_map50")
+
+
+def test_every_projection_names_the_measurement_it_rests_on():
+    pr = _projection(profile="full", per_vehicle_override=1400)
+    known = set(_meas.BY_ID)
+    for row in pr["projections"]:
+        assert row["how"], row["name"]
+        for mid in row["rests_on"]:
+            assert mid in known, f"{row['name']} cites unknown measurement {mid!r}"
+        if row["status"] == "projected":
+            assert row["rests_on"], f"{row['name']} is projected from nothing"
+
+
+def test_the_simulate_route_projects_without_touching_the_servers_config(monkeypatch):
+    """A refused /api/run once replaced the config the Plan tab previewed. A projection
+    route that did the same would make the Control tab describe a run nobody asked for,
+    and this one has to be side-effect free to be safe to call on every keystroke."""
+    import http.client
+
+    from pipeline import server as srv
+
+    before = srv.CONFIG
+    _, httpd = _serve(monkeypatch, {"busy": False})
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", httpd.server_address[1], timeout=10)
+        conn.request("GET", "/api/simulate?vehicles=4&rounds=3&epochs=2&per_vehicle=1400"
+                            "&partition=condition&profile=full",
+                     headers={"Connection": "close"})
+        got = json.loads(conn.getresponse().read())
+        assert got["budget"]["image_visits"] == 4 * 1400 * 3 * 2
+        assert got["config"]["n_vehicles"] == 4
+        conn.close()
+        assert srv.CONFIG is before, "a projection must not become the run configuration"
+        assert srv.STATE.busy is False, "a projection must not start anything"
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+
+
+def test_the_simulate_route_refuses_a_configuration_the_run_form_would_reject(monkeypatch):
+    """Projecting a run that could never be launched is a projection of nothing."""
+    import http.client
+
+    _, httpd = _serve(monkeypatch, {"busy": False})
+    port = httpd.server_address[1]
+    try:
+        for qs, expect in [("partition=nonsense", "unknown partition"),
+                           ("strategy=nonsense", "unknown strategy"),
+                           ("gpu_fraction=2", "gpu_fraction"),
+                           ("rounds=many", "not a int")]:
+            conn = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+            conn.request("GET", "/api/simulate?" + qs, headers={"Connection": "close"})
+            resp = conn.getresponse()
+            body = json.loads(resp.read())
+            assert resp.status == 400, (qs, body)
+            assert expect in body["error"], (qs, body)
+            conn.close()
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+
+
+# ----------------------------------------------------- the walkthrough, and the recording
+from pipeline import demo_run as _demo  # noqa: E402
+
+
+def test_every_walkthrough_step_points_at_a_panel_that_exists():
+    """A step naming a missing id highlights nothing and says nothing about it.
+
+    The reader sees a paragraph about a panel they cannot find, which is worse than no
+    walkthrough: it teaches them the page is lying. Checked against the markup and
+    against every id the other modules emit.
+    """
+    static = REPO / "pipeline" / "static"
+    declared = set(re.findall(r'id="([\w-]+)"',
+                              (static / "index.html").read_text(encoding="utf-8")))
+    for path in (static / "js").glob("*.js"):
+        declared |= set(re.findall(r'id="([\w-]+)"', path.read_text(encoding="utf-8")))
+
+    tour = (static / "js" / "tour.js").read_text(encoding="utf-8")
+    panels = [m for m in re.findall(r'panel:\s*"([\w-]+)"', tour)]
+    assert len(panels) >= 8, f"only {len(panels)} steps point at a panel"
+    missing = sorted(set(panels) - declared)
+    assert not missing, f"walkthrough steps point at ids nothing produces: {missing}"
+
+    # Every step names the mistake it prevents. A step that only describes the panel is
+    # a caption, and the page already has captions.
+    assert tour.count("mistake:") == tour.count("title:"), \
+        "every walkthrough step must name the mistake its panel prevents"
+
+    # And each tab it jumps to is a real tab.
+    tabs = set(re.findall(r'tab:\s*"(\w+)"', tour))
+    in_html = set(re.findall(r'data-view="(\w+)"',
+                             (static / "index.html").read_text(encoding="utf-8")))
+    assert tabs <= in_html, f"the walkthrough jumps to tabs that do not exist: {tabs - in_html}"
+
+
+def test_the_walkthrough_is_usable_with_a_keyboard_alone(tmp_path):
+    """Executed, not asserted by reading: arrows step, Escape leaves, Tab stays inside.
+
+    A dialog that traps focus and cannot be closed is worse than no dialog, and the
+    walkthrough is the one part of this page aimed at someone who has never seen it.
+    """
+    _run_js_check(tmp_path, "tour_steps.mjs")
+
+
+def test_the_recorded_run_invents_nothing():
+    """Every field in the demo payload is transcribed from a document, or absent.
+
+    A walkthrough with made-up numbers would be the exact failure this dashboard exists
+    to catch, shipped inside the thing that catches it. So the fields that were never
+    recorded are None or empty, and each one has a written reason.
+    """
+    p = _demo.payload()
+    live = p["state"]["live"]
+
+    assert p["state"]["demo"] is True, "the payload must be flagged as a recording"
+    assert live["baseline"] == {}, "no ceiling was trained for this run; do not invent one"
+    assert live["metrics"] == [] and live["map50"] == []
+    assert all(r.get("per_class") is None for r in live["holdout"]["rounds"])
+    assert all("mAP50-95" not in r for r in live["holdout"]["rounds"]), \
+        "only mAP50 was recorded; a second series would be fabricated"
+    assert all(v["fingerprint"] is None for v in p["state"]["fleet"]), \
+        "a fingerprint is a hash of exactly which images a vehicle holds; faking one is " \
+        "a lie in the field whose only job is provenance"
+    for key in ("util_pct", "mem_used_mib", "power_w", "energy_wh", "temp_c"):
+        assert p["state"]["gpu"][key] is None, f"gpu.{key} was not recorded"
+
+    # Every gap has a written reason, and every present field names its document.
+    assert set(p["absent"]) >= {"baseline", "per_class", "mAP50-95", "gpu"}
+    for field, why in p["absent"].items():
+        assert len(why) > 60, f"absent[{field}] does not explain itself"
+    for field, src in p["sources"].items():
+        assert ".md" in src or ".py" in src, f"sources[{field}] names no document"
+
+
+def test_the_recorded_numbers_are_the_ones_the_documents_say():
+    """The transcription itself. If PHASED_PLAN's table is edited, this fails rather than
+    the demo quietly teaching an outdated number."""
+    phased = (REPO / "docs" / "PHASED_PLAN.md").read_text(encoding="utf-8")
+    assert "0.1924" in phased and "0.2073" in phased and "0.2582" in phased
+    got = [r["mAP50"] for r in _demo.HOLDOUT_ROUNDS]
+    assert got == [0.1924, 0.2073], got
+    assert _demo.UNTRAINED_MAP50 == 0.2582
+
+    # The checksums are real captured aggregates, and they differ -- a demo whose
+    # heartbeat was stuck would teach the wrong lesson about the most important panel.
+    assert _demo.CHECKSUMS == [-1032.5395936965942, -2646.913425683975]
+    assert len(set(_demo.CHECKSUMS)) == 2
+    assert all(c in CAPTURED for c in ("-1032.5395936965942", "-2646.913425683975"))
+
+
+def test_the_recorded_fleet_uses_the_real_condition_profiles():
+    """'vehicle 3 is the rain/fog one' has to be true of the demo too, or the walkthrough
+    teaches a mapping the code does not have."""
+    got = [v["condition"] for v in _demo.fleet()]
+    assert got == [name for name, _ in vehicles.PROFILES[:6]]
+    assert all(v["n_train"] == 1400 for v in _demo.fleet())
+
+
+def test_the_recording_is_shaped_like_the_real_state(monkeypatch):
+    """The walkthrough feeds the recording through the real panels rather than having
+    views of its own -- views that would rot the moment a panel changed. That only works
+    while the two shapes agree."""
+    from pipeline import server as srv
+
+    real = srv.STATE.snapshot(Config())
+    fake = _demo.state()
+    missing = sorted(set(real) - set(fake) - {"demo"})
+    assert not missing, f"the recording lacks top-level keys the panels read: {missing}"
+    missing_live = sorted(set(real["live"]) - set(fake["live"]))
+    assert not missing_live, f"the recording's live block lacks: {missing_live}"
+
+
+def test_the_demo_route_serves_the_recording(monkeypatch):
+    import http.client
+
+    _, httpd = _serve(monkeypatch, {"busy": False})
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", httpd.server_address[1], timeout=10)
+        conn.request("GET", "/api/demo", headers={"Connection": "close"})
+        got = json.loads(conn.getresponse().read())
+        assert got["state"]["demo"] is True
+        assert got["run"].startswith("head warm-start probe")
+        conn.close()
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+
+
+# ------------------------------------------- run levers, the noise floor, and the era
+def test_an_unmeasured_image_size_refuses_the_vram_number_too():
+    """The wall clock was refused at imgsz=1024 and the VRAM figure beside it was not.
+
+    Both VRAM records were taken at 640, and activation memory scales with the pixel
+    count, so 5 087 MiB at 1024 understates it by 2.56x -- a number a reader would size a
+    run by, printed with a measured one's confidence. Refusing half a projection is worse
+    than refusing all of it, because the half that survives looks checked.
+    """
+    from pipeline import plan as _plan
+
+    at_640 = {p["name"]: p for p in _plan.project(Config(profile="full"))["projections"]}
+    assert at_640["peak VRAM"]["status"] == "projected"
+    assert at_640["wall clock"]["status"] == "projected"
+
+    at_1024 = {p["name"]: p
+               for p in _plan.project(Config(profile="full", imgsz_override=1024))["projections"]}
+    assert at_1024["wall clock"]["status"] == "refused"
+    assert at_1024["peak VRAM"]["status"] == "refused"
+    assert at_1024["peak VRAM"]["value"] is None
+
+
+def test_the_form_only_offers_levers_the_running_server_can_apply(monkeypatch):
+    """A body field this server has never heard of is dropped in silence.
+
+    So `options.levers` is derived from `Config.__dataclass_fields__` rather than listed:
+    a lever whose plumbing has not landed yet is advertised as absent, and the form
+    disables it instead of posting into a void and reporting a started run.
+
+    Derived through `LEVERS`, which maps the UI name to the field, because the two are not
+    always the same word. `imgsz` is `imgsz_override` -- `Config.imgsz` is a property that
+    falls back to the profile default -- and deriving by the UI name alone disabled a lever
+    the server does in fact accept. Which is the same failure as advertising one it does
+    not, pointing the other way.
+    """
+    from pipeline import server as srv
+
+    levers = srv.STATE.snapshot(Config())["options"]["levers"]
+    assert set(levers) == set(srv.LEVERS)
+    for name, ok in levers.items():
+        assert ok == (srv.LEVERS[name] in Config.__dataclass_fields__), name
+    assert levers["imgsz"] is True, "the field is imgsz_override; the UI name is imgsz"
+    # local_bn has existed for a while; this is the guard that the derivation is real
+    # rather than a dict of True.
+    assert levers["local_bn"] is True
+    assert len(set(levers.values())) >= 1
+
+
+def test_every_lever_the_server_advertises_has_a_written_caveat():
+    """The form and the projection panel both quote these. A lever offered with no note
+    is a control whose failure mode is undocumented at the point of use."""
+    from pipeline import server as srv
+
+    for name in srv.LEVERS:
+        note = _meas.LEVER_NOTES.get(name)
+        assert note and len(note) > 80, f"{name} has no usable caveat"
+    # The two that are wrong in a way the value alone cannot show must say so.
+    assert "NOT the method" in _meas.LEVER_NOTES["fix_bn_from_round"]
+    assert "no single global model" in _meas.LEVER_NOTES["local_bn"]
+
+
+def test_the_noise_floor_is_the_measured_one_with_its_conditions():
+    """+/-0.016 was inferred from a centralised ceiling anomaly across two data volumes
+    and was 8.9x too loose -- it had been dismissing real differences, FedBN's +0.0040
+    among them. The band must carry the conditions it was measured under, because a floor
+    measured at 2x1 on an IID fleet is not a floor for a 6x4 non-IID run."""
+    rec = _meas.BY_ID["noise_floor_map50"]
+    # Not pinned to a literal. This number is meant to be re-measured -- it already has
+    # been twice -- and a test that pins it fails on the improvement rather than on a
+    # mistake. What must hold is that it is measured, bounded, conditioned, and that the
+    # document agrees; `measurements --check` enforces that last part byte for byte.
+    assert rec["value"] > 0
+    assert rec["confidence"] == "measured" and rec["bound"] == "lower"
+    assert "IID" in rec["conditions"] and "n=3" in rec["conditions"]
+    assert rec["superseded"], "every version of this number replaced a worse one"
+    assert rec["reopened_by"], "a floor that cannot go stale is a floor nobody re-measures"
+    assert rec["source"] == "docs/NOISE_FLOOR.md"
+    doc = (REPO / "docs" / "NOISE_FLOOR.md").read_text(encoding="utf-8")
+    assert str(rec["value"]) in doc and "n = 3" in doc
+    assert "0.016" in doc, "the inferred figure it first replaced stays on the record"
+
+
+def test_an_observed_spread_needs_runs_that_differ_only_in_the_seed():
+    """Calling the difference between two different experiments a "spread" would
+    manufacture exactly the false confidence this module exists to prevent."""
+    same_except_seed = [
+        {"run": "a", "config": {"rounds": 2, "seed": 0}, "result": {"holdout_mAP50": 0.2000}},
+        {"run": "b", "config": {"rounds": 2, "seed": 1}, "result": {"holdout_mAP50": 0.2036}},
+        {"run": "c", "config": {"rounds": 2, "seed": 2}, "result": {"holdout_mAP50": 0.2018}},
+    ]
+    got = _meas.observed_spread(same_except_seed)
+    assert got["n"] == 3
+    assert got["spread"] == 0.0036
+    assert got["half_spread"] == 0.0018
+
+    # Two different experiments are not repeats.
+    assert _meas.observed_spread([
+        {"run": "a", "config": {"rounds": 2, "seed": 0}, "result": {"holdout_mAP50": 0.20}},
+        {"run": "b", "config": {"rounds": 6, "seed": 0}, "result": {"holdout_mAP50": 0.42}},
+    ]) is None
+    # Nor is one run, nor two runs at the same seed, nor a run with no holdout score.
+    assert _meas.observed_spread([same_except_seed[0]]) is None
+    assert _meas.observed_spread([
+        {"run": "a", "config": {"seed": 0}, "result": {"holdout_mAP50": 0.2}},
+        {"run": "b", "config": {"seed": 0}, "result": {"holdout_mAP50": 0.3}}]) is None
+    assert _meas.observed_spread([
+        {"run": "a", "config": {"seed": 0}, "result": {}},
+        {"run": "b", "config": {"seed": 1}, "result": {}}]) is None
+    assert _meas.observed_spread([]) is None
+
+
+def test_a_run_from_before_the_transport_fix_is_labelled_as_such():
+    """Until 2026-09-26 every client returned the fp16 EMA of its own best.pt and FedAvg
+    averaged that. Runs either side of the fix measure two different systems, and there is
+    no timestamp to sort on -- `generated` says when the report was written. The lever
+    fields cannot appear in a config a pre-fix runner produced, so they are the
+    discriminator."""
+    from pipeline import ledger as _ledger
+
+    old = _ledger.era({"strategy": "fedavg", "rounds": 6})
+    assert old["transport"] == "ema-fp16-best"
+    assert "best.pt" in old["note"] and old["comparable_with_older"] is False
+
+    new = _ledger.era({"strategy": "fedavg", "rounds": 6, "server_ema": 0.9})
+    assert new["transport"] == "trained-fp32"
+    assert "server_ema" in new["evidence"]
+
+    # Every lever on its own is enough evidence, and local_bn is deliberately in the set
+    # even though the field pre-dates the fix: a config that RECORDS it comes from the
+    # runner that also records the others.
+    for lever in _ledger.LEVER_KEYS:
+        assert _ledger.era({lever: 0})["transport"] == "trained-fp32", lever
+
+
+def test_the_ledger_row_carries_the_era_and_the_levers(tmp_path, monkeypatch):
+    from pipeline import ledger as _ledger
+
+    report = {"config": {"strategy": "fedavg", "partition": "random", "n_vehicles": 2,
+                         "rounds": 2, "local_epochs": 1, "per_vehicle": 300, "seed": 0,
+                         "profile": "demo", "imgsz": 1024, "server_ema": 0.9},
+              "holdout": {"rounds": [{"mAP50": 0.21, "mAP50-95": 0.1}]}}
+    row = _ledger.row(report, "2026-09-26-1200")
+    assert row["era"]["transport"] == "trained-fp32"
+    assert row["levers"] == {"imgsz": 1024, "server_ema": 0.9}
+
+    plain = _ledger.row({"config": {"strategy": "fedavg"}}, "2026-08-06-1200")
+    assert plain["era"]["transport"] == "ema-fp16-best"
+    assert plain["levers"] == {}
+
+
+def test_a_packing_that_has_crashed_a_run_is_reported_as_a_hazard():
+    """0.5 was the recommendation until it crashed the pipeline process with a Windows
+    access violation inside Ray. A speed-up number with no hazard beside it is an
+    invitation."""
+    hazards = _meas.BY_ID["gpu_fraction_speedup"]["hazards"]
+    assert set(hazards) == {"0.33", "0.5", "1.0"}
+    assert "access violation" in hazards["0.5"]
+    assert "headroom" in hazards["0.33"]
+
+    pr = _projection(profile="full", per_vehicle_override=1400, gpu_fraction=0.5)
+    row = next(r for r in pr["projections"] if r["name"] == "packing hazard")
+    assert row["status"] == "hazard"
+    assert "access violation" in row["how"]
+    # 1.0 is the packing that has completed a run, so it is not a hazard row of alarm --
+    # but it still says what it is, because "serialised" is a cost.
+    safe = _projection(profile="full", per_vehicle_override=1400, gpu_fraction=1.0)
+    row = next(r for r in safe["projections"] if r["name"] == "packing hazard")
+    assert "completed a run" in row["how"]
+
+
+def test_the_projection_names_the_conditions_the_noise_floor_was_measured_under():
+    pr = _projection(profile="full", per_vehicle_override=1400)
+    row = next(r for r in pr["projections"]
+               if r["name"] == "smallest difference this run could resolve")
+    assert row["value"] == _meas.value("noise_floor_map50")
+    assert "IID" in row["how"] and "lower bound" in row["how"]
+    assert "transport" in row["how"], "a stale floor must say what made it stale"
+
+
+def test_the_projection_says_whether_this_server_can_pull_each_lever():
+    pr = _projection(profile="full", per_vehicle_override=1400)
+    assert set(pr["levers"]) == {"freeze_round1", "server_ema", "fix_bn_from_round",
+                                 "imgsz", "local_bn"}
+    assert pr["levers"]["local_bn"] is True
+    assert set(pr["lever_notes"]) == set(pr["levers"])
+
+
+def test_the_run_form_posts_only_the_levers_the_server_implements(tmp_path):
+    """Executed under node, because the rule is about what leaves the browser."""
+    _run_js_check(tmp_path, "run_levers.mjs")
+
+
+def test_a_whole_snapshot_renders_through_the_real_panels(tmp_path):
+    """The closest thing to loading the page that runs without a browser.
+
+    One `$("typo")` in a render path throws, the whole pass dies, and the symptom is a
+    page that renders its chrome and then never updates -- no error anywhere a user can
+    see. The module-load check catches a module that will not parse; this one catches a
+    module that parses and then falls over on real data.
+
+    Both fixtures come from the server's own code, so this is the payload the browser
+    would actually receive.
+    """
+    _run_js_check(tmp_path, "live_render.mjs", extra={
+        "state.json": json.dumps(_demo.state()),
+        "facts.json": json.dumps({**_meas.table(), "observed_spread": None}),
+    })

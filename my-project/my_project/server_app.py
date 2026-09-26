@@ -37,7 +37,9 @@ DEFAULT_NUM_ROUNDS = 3
 
 def round_config(server_round: int, num_rounds: int, local_epochs: int, *,
                  plots_every_round: bool = False, optimizer: str = "auto",
-                 lr0: float = 0.0, mosaic: float = -1.0) -> Dict[str, Scalar]:
+                 lr0: float = 0.0, mosaic: float = -1.0,
+                 freeze_round1: int = 0, fix_bn_from_round: int = 0,
+                 imgsz: int = 640) -> Dict[str, Scalar]:
     """What every client is told about THIS round.
 
     Shared across clients on purpose, and safe to share -- unlike ``batch_id``, which
@@ -55,6 +57,40 @@ def round_config(server_round: int, num_rounds: int, local_epochs: int, *,
 
     ``lr0`` is inert unless ``optimizer`` is set: ``optimizer="auto"`` replaces lr0
     with ``0.002*5/(4+nc)``. The client warns when it is handed that combination.
+
+    ``freeze``: how many leading layers each client freezes, and it is sent as a
+    per-round value because it is only wanted on round 1. ``.load()`` transfers 349 of
+    355 tensors and cannot transfer the three classification convolutions, so the head
+    starts part-warmed at best -- 9 of 13 classes from COCO, the other four random. Round
+    1 therefore backpropagates that head's error into a backbone that already knew what a
+    car looks like, and this project has measured the damage: the warm-started model
+    scored 0.2582 on the holdout untrained and 0.2073 after two rounds. Freezing
+    ``model.0.``..``model.9.`` for round 1 only lets the head settle against fixed
+    features, which is what three independent papers arrive at -- linear-probe-then-
+    fine-tune (arXiv:2306.03937), FedBABU (arXiv:2106.06042), and FedSTO's first stage on
+    this very dataset (arXiv:2310.17097).
+
+    What ``freeze=10`` actually does, MEASURED on one epoch of batch_1 rather than
+    assumed -- and it is stronger than "no gradient":
+
+    ```
+    backbone model.0-9   weight   changed  0/54     head model.10-22  weight   changed 66/67
+    backbone model.0-9   bias     changed  0/27     head model.10-22  bias     changed 36/36
+    backbone model.0-9  running_var changed 0/27    head model.10-22 running_var changed 30/30
+    requires_grad=False on 82/184 parameter tensors
+    ```
+
+    The statistics do not drift either, because ``_model_train``
+    (``engine/trainer.py:701-707``) puts every frozen layer's ``BatchNorm2d`` into
+    ``eval()`` -- "Freeze BN stat", in their words. So round 1 sends back a backbone that
+    is *bit-identical* on every vehicle, which makes its aggregation an average of
+    identical tensors and turns round 1 into a purely head-fitting round, federated only
+    where the disagreement is. That is precisely the arrangement FedBABU and LP-FT
+    describe, arrived at by the library's own implementation detail.
+
+    ``freeze=N`` means ``model.0.``..``model.{N-1}.`` plus ``.dfl``
+    (``engine/trainer.py:330-352``), so 10 is the backbone of YOLOv8s, and a value large
+    enough to leave nothing trainable raises instead of training nothing.
     """
     return {
         "local_epochs": local_epochs,
@@ -64,7 +100,42 @@ def round_config(server_round: int, num_rounds: int, local_epochs: int, *,
         "optimizer": optimizer,
         "lr0": lr0,
         "mosaic": mosaic,
+        # Round 1 only. A freeze that stayed on would federate a frozen backbone for
+        # the whole run, which is a different experiment wearing this one's name.
+        "freeze": int(freeze_round1) if server_round == 1 else 0,
+        # FixBN: on from the named round to the end of the run, never for one round.
+        # A warm-up is the method, not an implementation detail -- the statistics have
+        # to be worth pinning before they are pinned, and 1 pins the COCO initial ones.
+        "fix_bn": bool(fix_bn_from_round) and server_round >= int(fix_bn_from_round),
+        # The federation's input resolution. Sent rather than hardcoded so the
+        # holdout and the centralised baseline -- which already take it as a flag --
+        # can be scored at the same size. A federation at 1024 measured against a
+        # ceiling at 640 is not a comparison.
+        "imgsz": int(imgsz),
     }
+
+
+def learning_checksum(weights) -> float:
+    """Sum of the LEARNED tensors only -- the B4 guard's arithmetic.
+
+    Integer buffers are excluded, and that exclusion is the whole point.
+    `num_batches_tracked` is int64 and climbs by one per optimizer step in every BatchNorm
+    layer, so with 57 of them and 88 steps a round it adds roughly +5 000 to a naive sum
+    every round, monotonically, whatever the weights do. A frozen model would still show a
+    moving checksum.
+
+    It did not use to matter: until 2026-09-26 the clients sent `best.pt`'s EMA, and
+    `ModelEMA.update` lerps only floating-point tensors, so every counter arrived as 0 and
+    the sum was float-only by accident. Sending the trained module -- the fix for that bug
+    -- brought the real counters with it, and would have quietly blunted the single signal
+    this project trusts most: "equal consecutive checksums mean nothing is being learned".
+
+    Consequence to state rather than hide: checksums logged before and after this change are
+    not comparable with each other. The comparison that matters is round-to-round inside one
+    run, which is what `pipeline/logparse.py` reads.
+    """
+    return float(sum(w.sum() for w in weights
+                     if w.size > 0 and w.dtype.kind == "f"))
 
 
 class BatchAssignmentMixin:
@@ -95,6 +166,7 @@ class BatchAssignmentMixin:
         num_rounds: int = DEFAULT_NUM_ROUNDS,
         checkpoint_dir: str = "checkpoints",
         save_every: int = 1,
+        server_ema: float = 0.0,
         **kwargs: Any,
     ):
         # Everything else belongs to whichever strategy is mixed in underneath, and
@@ -118,6 +190,12 @@ class BatchAssignmentMixin:
         os.makedirs(self.checkpoint_dir, exist_ok=True)
         # proximal_mu > 0 turns on FedProx-style proximal regularization on clients.
         self.proximal_mu = float(proximal_mu)
+
+        # Server-side EMA across rounds. 0.0 = off, which is the default, so this
+        # changes no number until it is asked for. See _apply_server_ema.
+        self.server_ema = float(server_ema)
+        self._ema_weights: Optional[NDArrays] = None
+        self._ema_rounds = 0
         logger.info(
             f"[Server] {type(self).__name__} initialized with batch_id_range={batch_id_range}, "
             f"aggregation={type(self).__mro__[2].__name__} (proximal_mu={self.proximal_mu})"
@@ -205,7 +283,7 @@ class BatchAssignmentMixin:
 
         # Log parameter information for debugging
         weights = parameters_to_ndarrays(parameters)
-        weights_checksum = sum(w.sum() for w in weights if w.size > 0)
+        weights_checksum = learning_checksum(weights)
         logger.info(f"[Server] Sending parameters with checksum: {weights_checksum}")
 
         # Delegate to FedAvg for the initial instructions
@@ -269,7 +347,7 @@ class BatchAssignmentMixin:
 
         # Log parameter information for debugging
         weights = parameters_to_ndarrays(parameters)
-        weights_checksum = sum(w.sum() for w in weights if w.size > 0)
+        weights_checksum = learning_checksum(weights)
         logger.info(f"[Server] Sending evaluation parameters with checksum: {weights_checksum}")
 
         # Use default Flower behavior
@@ -295,6 +373,65 @@ class BatchAssignmentMixin:
                 updated_instructions.append((client_proxy, eval_ins))  # Fallback
 
         return updated_instructions
+
+    def _apply_server_ema(self, weights: NDArrays, server_round: int) -> NDArrays:
+        """Blend this round's aggregate with an exponential average of the previous ones.
+
+        The federation ends every round on an essentially unsmoothed model, and the
+        centralised ceiling it is compared against does not. Ultralytics builds a fresh
+        ``ModelEMA`` per ``train()`` call with ``updates = 0``
+        (``engine/trainer.py:404``) and ramps its decay as
+        ``0.9999*(1 - exp(-updates/2000))`` (``utils/torch_utils.py:734``), so 88 client
+        steps reach d = 0.043 and 352 reach 0.161, while the ceiling's 3 168 steps reach
+        0.795. Averaging on the client cannot fix that -- the counter restarts every
+        round by construction -- so the averaging has to happen where the rounds are,
+        which is here.
+
+        Bias-corrected, and that is not decoration. Without it, round 1 would return
+        ``d * initial + (1 - d) * aggregate`` and drag the fleet back toward the model it
+        started from; dividing by ``1 - d**t`` makes round 1 exactly the aggregate and
+        lets the average build up from there. Same correction Adam uses, for the same
+        reason.
+
+        This replaces the broadcast *and* the checkpoint, because those are the same
+        tensors and the method is only meaningful if the clients continue from the
+        smoothed model -- that is what FedSWA (arXiv:2507.20016) and FedEMA
+        (arXiv:2505.00318) do. It is therefore a different federation, not a reporting
+        change, and it is off by default.
+
+        Fails loudly on a shape or length change rather than silently restarting the
+        average: a strategy that changed the tensor list mid-run would otherwise produce
+        an EMA of two different architectures.
+        """
+        if self._ema_weights is None:
+            # Zero, not the first aggregate. `m_t = d*m_{t-1} + (1-d)*w_t` divided by
+            # `1 - d**t` is an exact average only if the accumulator starts empty;
+            # seeding it with `w_1` instead makes the correction over-divide from round
+            # 2 on, and a constant aggregate then comes back inflated -- which is how
+            # the first draft of this method failed its own "nothing changed" test.
+            self._ema_weights = [np.zeros_like(w, dtype=np.float64) for w in weights]
+            self._ema_rounds = 0
+            logger.info(f"[Server] Server-side EMA on at decay {self.server_ema}; "
+                        f"round {server_round} is the aggregate itself.")
+
+        if len(self._ema_weights) != len(weights) or any(
+                e.shape != w.shape for e, w in zip(self._ema_weights, weights)):
+            raise RuntimeError(
+                f"[Server] server EMA state does not match this round's aggregate "
+                f"({len(self._ema_weights)} vs {len(weights)} tensors). Refusing to "
+                f"average two different models.")
+
+        d = self.server_ema
+        self._ema_rounds += 1
+        self._ema_weights = [d * e + (1.0 - d) * w.astype(np.float64)
+                             for e, w in zip(self._ema_weights, weights)]
+        correction = 1.0 - d ** self._ema_rounds
+        smoothed = [(e / correction).astype(w.dtype)
+                    for e, w in zip(self._ema_weights, weights)]
+        logger.info(f"[Server] Server-side EMA: round {server_round} blended at decay "
+                    f"{d} over {self._ema_rounds} rounds (bias correction "
+                    f"{correction:.4f}).")
+        return smoothed
 
     def aggregate_fit(
         self,
@@ -337,7 +474,10 @@ class BatchAssignmentMixin:
         if parameters is not None:
             # Calculate parameters checksum for verification
             weights = parameters_to_ndarrays(parameters)
-            weights_checksum = sum(w.sum() for w in weights if w.size > 0)
+            if self.server_ema > 0:
+                weights = self._apply_server_ema(weights, server_round)
+                parameters = fl.common.ndarrays_to_parameters(weights)
+            weights_checksum = learning_checksum(weights)
             logger.info(f"[Server] Aggregated parameters with checksum: {weights_checksum}")
 
             # Persist the aggregated global model on the configured cadence and on
@@ -551,6 +691,22 @@ def server_fn(context: Context):
     # "mosaic off" rather than "not specified" -- a default silently changed to its
     # opposite is exactly the failure this project keeps shipping.
     mosaic = float(run_config.get("mosaic", -1.0))
+    # Round 1 only, and 0 = off, so this commit changes no numbers until it is set. 10 is
+    # the YOLOv8s backbone; see round_config for why round 1 is the round that wants it.
+    freeze_round1 = int(run_config.get("freeze_round1", 0))
+    # Server-side EMA across rounds, 0.0 = off. A real federation change, not a
+    # reporting one: the clients continue from the smoothed model. See
+    # BatchAssignmentMixin._apply_server_ema.
+    server_ema = float(run_config.get("server_ema", 0.0))
+    # FixBN (arXiv:2303.06530): freeze the normalisation statistics from this round
+    # on. 0 = off. Unlike FedBN it leaves ONE global model, so the holdout still
+    # measures the model that was trained.
+    fix_bn_from_round = int(run_config.get("fix_bn_from_round", 0))
+    # BDD100K frames are 1280x720 and this trains at 640 by default, where a traffic
+    # light is sub-20px. Published YOLOv8 numbers on this dataset: 0.470 mAP50 for
+    # yolov8n at 640 against 0.625 for yolov8s at 1024. The pipeline scores the
+    # holdout and the baseline at whatever this is, so the comparison stays fair.
+    imgsz = int(run_config.get("imgsz", 640))
     # FedBN is a client-side filter -- the server still receives and averages every
     # tensor, clients simply decline the BatchNorm ones. Recorded here so the run log
     # says which federation this was, and so the caveat below is on the record.
@@ -559,7 +715,9 @@ def server_fn(context: Context):
         f"[Server] run_config -> num_rounds={num_rounds}, fraction_fit={fraction_fit}, "
         f"fraction_evaluate={fraction_evaluate}, local_epochs={local_epochs}, "
         f"min_clients={min_clients}, strategy={strategy_name}, "
-        f"proximal_mu={proximal_mu}, local_bn={local_bn}"
+        f"proximal_mu={proximal_mu}, local_bn={local_bn}, "
+        f"freeze_round1={freeze_round1}, server_ema={server_ema}, "
+        f"fix_bn_from_round={fix_bn_from_round}, imgsz={imgsz}"
     )
     if local_bn:
         logger.warning(
@@ -609,7 +767,9 @@ def server_fn(context: Context):
     def fit_config_fn(server_round: int) -> Dict[str, Scalar]:
         return round_config(server_round, num_rounds, local_epochs,
                             plots_every_round=plots_every_round,
-                            optimizer=optimizer_name, lr0=lr0, mosaic=mosaic)
+                            optimizer=optimizer_name, lr0=lr0, mosaic=mosaic,
+                            freeze_round1=freeze_round1,
+                            fix_bn_from_round=fix_bn_from_round, imgsz=imgsz)
 
     # Build the strategy through the registry: the mixin carries this project's
     # behaviour, the named Flower strategy carries the aggregation.
@@ -621,6 +781,7 @@ def server_fn(context: Context):
             num_rounds=num_rounds,
             checkpoint_dir=checkpoint_dir,
             save_every=save_every,
+            server_ema=server_ema,
         ),
         common_kwargs=dict(
             fraction_fit=fraction_fit,            # From run_config
