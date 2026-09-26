@@ -187,6 +187,21 @@ RECORDS: list[dict] = [
        "the shard up with unrelated images and turns a non-IID run nearly IID -- "
        "silently, and the label still says the condition.",
        "2026-08-16"),
+    _m("state_tensors", "arrays in one exchange between server and vehicle", 355, "tensors",
+       "docs/GPU_TESTPLAN.md", "355 either way",
+       "`get_weights` serialises the whole state_dict, so this is what travels in each "
+       "direction every round -- parameters AND BatchNorm buffers. Unchanged by the "
+       "13-class head, which is why a count is not enough to tell two models apart: the "
+       "Weights tab reads the shapes out of the checkpoint itself.",
+       "2026-08-16"),
+    _m("fp16_transport_tensors", "tensors that arrived fp16-rounded, before the fix",
+       355, "tensors",
+       "docs/findings/2026-09-26-accuracy-findings.md", "355/355",
+       "Every one of the 355 was exactly fp16-representable leaving the client, against "
+       "58/355 in the live trained model -- the `.half().float()` signature of ultralytics' "
+       "checkpoint round trip. The global checkpoints on disk are still fp16, so a "
+       "checkpoint is a lossy record of what the transport now carries in fp32.",
+       "2026-09-26"),
     _m("car_share", "car's share of the objects in BDD100K", 0.554, "fraction",
        "docs/FEDERATED_DETECTION.md", "55.4 % of objects",
        "One averaged mAP over this holdout is close to a car detector's report card. "

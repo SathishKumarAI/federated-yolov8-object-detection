@@ -433,3 +433,31 @@ body[data-tour="1"] main{padding-bottom:280px}
         letter-spacing:.06em;border:1px solid currentColor;border-radius:var(--r1);
         padding:1px 6px}
 tr.hazard-row td{background:color-mix(in srgb,var(--warn) 7%,transparent)}
+
+/* ------------------------------------------------------------- weights tab
+   The one tab written for a reader who does not know what a tensor is, so it carries
+   prose (.lede) at a size the rest of the dashboard has no use for, and the only
+   picture here whose pixels ARE the data (.kern). */
+.lede{font-size:var(--t-lg);line-height:1.6;color:var(--ink-2);margin:0 0 var(--s4);
+      max-width:72ch}
+.lede b{color:var(--ink);font-weight:650}
+.lede em{color:var(--accent);font-style:normal}
+
+/* 32 kernels of 3x3x3: one learned filter per square, its three input channels painted
+   as red, green and blue. The only layer where that is a measurement rather than a
+   decoration, which is why only this one is drawn. */
+.kernels{display:grid;grid-template-columns:repeat(auto-fill,minmax(64px,1fr));
+         gap:var(--s3);margin:0}
+.kern{margin:0;background:var(--sunk);border:1px solid var(--line-soft);
+      border-radius:var(--r1);padding:5px}
+.kern .grid3{display:grid;gap:1px;aspect-ratio:1}
+.kern .grid3>i{display:block;border-radius:1px}
+.kern figcaption{margin-top:4px;font:500 10px/1.4 var(--mono);color:var(--dim);
+                 text-align:center}
+#anConvNote details{margin:var(--s2) 0}
+#anConvNote summary{cursor:pointer;color:var(--dim);font-family:var(--mono)}
+#anConvNote summary:hover{color:var(--ink)}
+/* A kind that is 0.001 % of the numbers still has to be visible in the stacked bar,
+   or the bar says it is not there at all. */
+#anShares .stack>i{min-width:1px}
+#anShares .stackrow{grid-template-columns:minmax(150px,190px) 1fr}

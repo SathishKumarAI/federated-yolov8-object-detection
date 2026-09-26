@@ -10,12 +10,13 @@ import { loadData } from "./data.js";
 import { loadPlan } from "./plan.js";
 import { loadDocs } from "./docs.js";
 import { loadMetrics } from "./metrics.js";
+import { loadAnatomy } from "./anatomy.js";
 import { pollEdge } from "./edge.js";
 import { loadMeasurements, loadProfile, renderProvenance } from "./insight.js";
 import { loadSimulation, wireSimulate } from "./simulate.js";
 import { wireTour, offerTour } from "./tour.js";
 
-const VIEWS = ["control", "live", "data", "metrics", "plan", "simulate", "docs"];
+const VIEWS = ["control", "live", "data", "weights", "metrics", "plan", "simulate", "docs"];
 
 function showView(tab) {
   const want = tab.dataset.view;
@@ -30,6 +31,9 @@ function showView(tab) {
   if (want === "plan") loadPlan();
   if (want === "simulate") loadSimulation();
   if (want === "metrics") loadMetrics(true);
+  // The checkpoint read is a 22 MB torch load on a cache miss, so it happens on
+  // first sight of the tab. After that the state stream refetches it per round.
+  if (want === "weights") loadAnatomy();
   if (want === "docs") { renderProvenance(); loadDocs(); }
   // The profile reads every client log end to end, so it is loaded on first sight of
   // the Live tab and then only when asked -- never on a state tick.

@@ -3416,3 +3416,187 @@ def test_a_whole_snapshot_renders_through_the_real_panels(tmp_path):
         "state.json": json.dumps(_demo.state()),
         "facts.json": json.dumps({**_meas.table(), "observed_spread": None}),
     })
+
+
+# ------------------------------------------- what travels: pipeline/anatomy.py
+from pipeline import anatomy as _an  # noqa: E402
+
+
+def test_no_pipeline_module_imports_torch_at_module_scope():
+    """The CI contract, enforced.
+
+    The pipeline test job installs `pytest` and `pyyaml` only. A module-scope
+    `import torch` in any file this package imports fails the ENTIRE suite on a bare
+    interpreter, and the failure looks nothing like its cause -- it broke CI on
+    2026-09-26. torch is legitimate here; it just has to be imported inside the function
+    that needs it.
+    """
+    offenders = []
+    for py in sorted(pathlib.Path(_an.__file__).parent.glob("*.py")):
+        for i, line in enumerate(py.read_text(encoding="utf-8").splitlines(), 1):
+            if re.match(r"^(import torch|from torch)\b", line):
+                offenders.append(f"{py.name}:{i}: {line.strip()}")
+    assert not offenders, "torch imported at module scope:\n" + "\n".join(offenders)
+
+
+def test_a_missing_checkpoint_is_none_rather_than_a_model_made_of_zeros(monkeypatch, tmp_path):
+    """The failure mode this whole repo is a catalogue of, in one panel.
+
+    A checkpoint-less checkout must not render 0 tensors, 0 numbers and 0 bytes: those
+    read as measurements of a real model. It has to say there is no file, and which
+    stage writes one.
+    """
+    monkeypatch.setattr(_an.paths, "PROJECT", tmp_path)
+    got = _an.payload()
+    assert got["available"] is False
+    assert "federate" in got["reason"]
+    assert "model" not in got and "exchange" not in got
+    # And the identity is still answered, one way or the other, rather than omitted.
+    assert "available" in got["roundtrip"]
+    if not got["roundtrip"]["available"]:
+        assert got["roundtrip"]["reason"]
+
+
+def test_a_checkpoint_that_is_not_a_model_fails_loudly_in_the_payload(monkeypatch, tmp_path):
+    """A truncated or foreign .pt says so. It must not raise into the HTTP handler and
+    it must not come back looking like an empty model."""
+    pytest.importorskip("torch")
+    ckpts = tmp_path / "checkpoints"
+    ckpts.mkdir()
+    (ckpts / "global_round_1.pt").write_bytes(b"not a torch archive")
+    monkeypatch.setattr(_an.paths, "PROJECT", tmp_path)
+    got = _an.payload()
+    assert got["available"] is False
+    assert "global_round_1.pt" in got["reason"]
+
+
+def test_the_newest_checkpoint_is_the_newest_one_written(monkeypatch, tmp_path):
+    """By mtime, not by round number.
+
+    The directory is not cleared between runs, so a previous 20-round run leaves
+    `global_round_20.pt` sitting beside this run's round 2 -- the trap
+    `holdout.checkpoints` documents at length. Reading the highest number would describe
+    a model from a different experiment.
+    """
+    import os
+
+    ckpts = tmp_path / "checkpoints"
+    ckpts.mkdir()
+    old, new = ckpts / "global_round_20.pt", ckpts / "global_round_2.pt"
+    old.write_bytes(b"old")
+    new.write_bytes(b"new")
+    os.utime(old, (1, 1))
+    monkeypatch.setattr(_an.paths, "PROJECT", tmp_path)
+    assert _an.newest_checkpoint() == new
+
+
+def test_every_kind_of_state_tensor_is_named_from_its_real_key():
+    """The classification, against key names taken out of a real global checkpoint.
+
+    Shapes collide -- a BatchNorm scale and a head bias are both short 1-D float
+    vectors -- so the kind is decided by name. Calling a class bias "normalisation"
+    would hide the one place in this model where a weight has a name a person knows.
+    """
+    assert _an.classify("model.0.conv.weight", 4) == "conv"
+    assert _an.classify("model.0.bn.weight", 1) == "bn_affine"
+    assert _an.classify("model.0.bn.bias", 1) == "bn_affine"
+    assert _an.classify("model.0.bn.running_mean", 1) == "bn_stats"
+    assert _an.classify("model.0.bn.running_var", 1) == "bn_stats"
+    assert _an.classify("model.0.bn.num_batches_tracked", 0) == "bn_counter"
+    assert _an.classify("model.22.cv3.0.2.bias", 1) == "head_cls_bias"
+    assert _an.classify("model.22.cv2.0.2.bias", 1) == "head_box_bias"
+    assert _an.classify("model.22.dfl.conv.weight", 4) == "conv"
+    # Every kind the classifier can return has a row to be rendered in.
+    for key in ("conv", "bn_affine", "bn_stats", "bn_counter", "head_cls_bias",
+                "head_box_bias", "other"):
+        assert key in _an.LABELS, f"{key} has no label or explanation"
+
+
+def test_the_wire_count_is_both_directions_plus_fedavgs_one_integer():
+    """Up is not down: the vehicle also returns `num_examples`, which is the weight
+    FedAvg divides by. Eight bytes, and the whole aggregation rests on them."""
+    x = _an.exchange({"wire_bytes": 1000, "tensors": 355}, vehicles=6, rounds=4)
+    assert x["down_per_vehicle"] == 1000
+    assert x["up_per_vehicle"] == 1008
+    assert x["per_round"] == 6 * 2008
+    assert x["total"] == 4 * 6 * 2008
+    assert x["images_moved"] == 0
+    assert "gRPC" in x["excluded"], "an estimate must say what it leaves out"
+
+
+def _real_checkpoint():
+    """A global checkpoint on this machine, or None. Never written by a test."""
+    d = paths.PROJECT / "checkpoints"
+    files = sorted(d.glob("global_*.pt")) if d.is_dir() else []
+    return files[0] if files else None
+
+
+@pytest.mark.skipif(_real_checkpoint() is None,
+                    reason="no global checkpoint on this machine")
+def test_a_real_checkpoints_numbers_add_up():
+    """Read a real file and check the arithmetic closes.
+
+    The point is not the specific counts -- they are properties of the architecture and
+    of whichever run wrote the file -- but that the breakdown is a partition: every
+    tensor lands in exactly one kind, and the kinds sum to the totals the page prints
+    beside them. A breakdown that quietly dropped a tensor would still look plausible.
+    """
+    pytest.importorskip("torch")
+    inv = _an.inventory(_real_checkpoint())
+    assert sum(r["tensors"] for r in inv["kinds"]) == inv["tensors"]
+    assert sum(r["values"] for r in inv["kinds"]) == inv["values"]
+    assert sum(r["wire_bytes"] for r in inv["kinds"]) == inv["wire_bytes"]
+    # fp32 on the wire is at least the fp16 the file stores, and this file IS fp16.
+    assert inv["wire_bytes"] >= inv["file_tensor_bytes"]
+    assert inv["slot"] in ("model", "ema")
+    # The one layer rendered: 4-D, and its three input channels are why it can be.
+    fc = inv["first_conv"]
+    assert len(fc["shape"]) == 4 and fc["shape"][1] == 3
+    assert len(fc["kernels"]) == fc["shape"][0]
+    assert all(len(k["rgb"]) == fc["shape"][2] * fc["shape"][3] for k in fc["kernels"])
+    # Named from the label set, never from the checkpoint: this architecture declares
+    # no names, so the file's own list is "0".."12".
+    assert inv["head"]["classes"] == _meas.BDD_CLASSES
+    for scale in inv["head"]["scales"]:
+        assert len(scale["values"]) == len(_meas.BDD_CLASSES)
+        assert set(scale["cold_values"]) == set(inv["head"]["cold_start"])
+
+
+@pytest.mark.skipif(_real_checkpoint() is None,
+                    reason="no global checkpoint on this machine")
+def test_the_page_reads_a_file_it_names():
+    """Provenance, not decoration: the payload says which file every number came from,
+    how big it is and when it was written, so a reader can open the same one."""
+    pytest.importorskip("torch")
+    got = _an.payload()
+    assert got["available"] is True
+    c = got["checkpoint"]
+    assert (paths.PROJECT / "checkpoints" / c["name"]).is_file()
+    assert c["bytes"] > 0 and c["mtime"] > 0
+    assert got["model"]["tensors"] > 0 and got["model"]["values"] > 0
+    assert got["exchange"]["arrays"] == got["model"]["tensors"]
+
+
+def test_the_anatomy_route_and_its_tab_exist_and_are_read_only():
+    """A GET, in the tab row, and no POST anywhere near it."""
+    from pipeline import server
+
+    src = pathlib.Path(server.__file__).read_text(encoding="utf-8")
+    get, _, post = src.partition("def do_POST")
+    assert "/api/anatomy" in get, "the route must be served from do_GET"
+    assert "/api/anatomy" not in post, "nothing about this page may be mutable"
+    html = (server.STATIC / "index.html").read_text(encoding="utf-8")
+    assert 'data-view="weights"' in html, "the tab row must offer the page"
+    assert 'id="view-weights"' in html
+
+
+def test_the_weights_panels_render_a_payload_and_a_missing_one(tmp_path):
+    """Executed under node against the real modules.
+
+    Two cases in one pass, because they are the two that matter: a whole payload through
+    every panel, and an unavailable one, which must produce the reason rather than a
+    model made of zeros.
+    """
+    _run_js_check(tmp_path, "anatomy_panels.mjs", extra={
+        "facts.json": json.dumps({**_meas.table(), "observed_spread": None}),
+    })

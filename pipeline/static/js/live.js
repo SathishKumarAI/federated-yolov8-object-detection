@@ -8,6 +8,7 @@ import { state } from "./state.js";
 import { renderStages, renderOptions } from "./control.js";
 import { renderFleet } from "./fleet.js";
 import { renderNowTraining } from "./consumed.js";
+import { renderExchange } from "./anatomy.js";
 import { renderPerClass, renderChecksumLedger, measured, record,
          observedSpread } from "./insight.js";
 
@@ -29,6 +30,10 @@ export function applyState(s) {
   renderOptions(s.options);
   renderGpu(s.gpu);
   renderLive(s.live, s.config);
+  // The Weights tab's live half. Here rather than in main.js so it renders on EVERY
+  // path that delivers a snapshot -- including the walkthrough's replay, which calls
+  // applyState directly while the live stream is held off.
+  renderExchange(s);
 
   const key = `${s.live && s.live.training_now}|${s.busy}`;
   if (key !== artifactsKey || Date.now() - artifactsAt > ARTIFACT_MS) {

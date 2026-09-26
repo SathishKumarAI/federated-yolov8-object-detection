@@ -36,6 +36,7 @@ Open the one file that owns the thing. Do not read the package to find it.
 | Chart axes, ticks, tooltips, sparkline, the noise band | `pipeline/static/js/chart.js` |
 | How state reaches the browser, and the polling fallback | `pipeline/static/js/stream.js` |
 | Checksum ledger, per-class small multiples, round profile, provenance | `pipeline/static/js/insight.js` |
+| **What travels between server and vehicles**, and the panels that show it | `pipeline/anatomy.py`, `pipeline/static/js/anatomy.js` |
 | The projection form | `pipeline/static/js/simulate.js` |
 | The demo/help walkthrough and its steps | `pipeline/static/js/tour.js` |
 | A run lever's caveat, or which levers the form offers | `pipeline/measurements.py` `LEVER_NOTES`, `pipeline/server.py` `LEVERS` |
