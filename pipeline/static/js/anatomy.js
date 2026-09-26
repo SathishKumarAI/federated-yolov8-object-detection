@@ -257,12 +257,16 @@ function renderBatchNorm(bn) {
     `is why averaging them across vehicles partitioned by weather is averaging six ` +
     `different descriptions of what a road looks like. ` +
     (bn.counters_all_zero
-      ? `<span class="warn">Every step counter in this file is 0</span> — ` +
-        `<code>ModelEMA.update</code> interpolates only floating-point tensors, so a ` +
-        `checkpoint written through ultralytics' EMA path carries no batch counts at all. ` +
-        `That is a property of the file, not proof about the exchange: the counters are ` +
-        `what the aggregate checksum deliberately excludes, because they climb on their ` +
-        `own whatever the weights do.`
+      ? `<span class="warn">Every step counter in this file is 0</span> — and on ` +
+        `2026-09-26 the cause was measured rather than assumed. Flower's FedAvg scales ` +
+        `each vehicle's array by <code>num_examples / total</code> <em>in place</em>, and ` +
+        `for an int64 array that truncates: 89 × 0.5 written back into int64 is 0, for ` +
+        `any fleet larger than one. The clients were logging <code>89</code> while the ` +
+        `model the server was about to save logged <code>0</code>. This project now asks ` +
+        `for the copying path (<code>inplace=False</code>), so a 0 here means either an ` +
+        `older run, or that path being lost again. (A client's own ` +
+        `<code>best.pt</code> is separately zero, because <code>ModelEMA.update</code> ` +
+        `interpolates only floating-point tensors.)`
       : `Step counters in this file: ${bn.counter_values.map(esc).join(", ")}. They climb ` +
         `on their own, which is why the checksum this project trusts sums floating-point ` +
         `tensors only.`);

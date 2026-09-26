@@ -252,6 +252,15 @@ class BatchAssignmentMixin:
             if not set_weights(self._save_model.model, weights):
                 logger.error(f"[Server] Round {server_round}: set_weights failed; skipping checkpoint.")
                 return
+            # Symmetric with the client's line. The BatchNorm step counters are int64
+            # buffers that a float checksum cannot see, and the clients were measured
+            # sending 89 while the saved aggregate read 0 -- so the number is printed on
+            # both sides of the wire until that is explained.
+            sd = self._save_model.model.state_dict()
+            counters = [int(v) for k, v in sd.items() if k.endswith("num_batches_tracked")]
+            if counters:
+                logger.info(f"[Server] Round {server_round} BN counters in the model about "
+                            f"to be saved: min={min(counters)} max={max(counters)}")
             round_path = os.path.join(self.checkpoint_dir, f"global_round_{server_round}.pt")
             last_path = os.path.join(self.checkpoint_dir, "global_last.pt")
             self._save_model.save(round_path)
@@ -782,6 +791,20 @@ def server_fn(context: Context):
             server_ema=server_ema,
         ),
         common_kwargs=dict(
+            # FedAvg's in-place aggregation DESTROYS integer buffers. It scales each
+            # client's array by `num_examples / total` with `np.multiply(x, f, out=x)`,
+            # and for an int64 array that truncates: 89 * 0.5 written back into int64 is
+            # 0, for any fleet larger than one. Measured 2026-09-26 -- clients logged
+            # `BN counters min=89 max=89`, the model the server was about to save logged
+            # `min=0 max=0`, and `aggregate_inplace()` called directly on two int64 89s
+            # returns 0 while `aggregate()` returns 89.0.
+            #
+            # The zeroed counter is inert for THIS model (PyTorch only divides by it when
+            # `momentum is None`, and Ultralytics sets 0.03), so nothing trained wrongly.
+            # It is still half the payload being silently corrupted in transit, which is
+            # the genre of failure this project keeps a table of, so take the copying
+            # path: ~43 MiB per client per round, which is nothing here.
+            inplace=False,
             fraction_fit=fraction_fit,            # From run_config
             fraction_evaluate=fraction_evaluate,  # From run_config
             min_fit_clients=min_clients,          # From run_config

@@ -134,3 +134,32 @@ def test_the_checksum_still_moves_when_a_weight_does():
     after = [np.array([1.0001], dtype=np.float32), np.array([1], dtype=np.int64)]
 
     assert learning_checksum(before) != learning_checksum(after)
+
+
+def test_integer_buffers_survive_aggregation():
+    """FedAvg's in-place path silently zeroes every int64 buffer.
+
+    `aggregate_inplace` scales each client's array by `num_examples / total` using
+    `np.multiply(x, f, out=x)`. For an int64 array that truncates in place: 89 * 0.5
+    written back into int64 is 0 -- and it is 0 for ANY fleet larger than one, because the
+    scaling factor is always below 1.
+
+    Measured on a real 2-client round: clients logged `BN counters min=89 max=89`, and the
+    model the server was about to save logged `min=0 max=0`. `num_batches_tracked` is inert
+    for this model (PyTorch divides by it only when `momentum is None`; Ultralytics uses
+    0.03), so nothing trained wrongly -- but it is part of the payload being corrupted in
+    transit, and the server therefore asks for the copying path.
+    """
+    import numpy as np
+    from flwr.common import FitRes, Status, Code, ndarrays_to_parameters
+    from flwr.server.strategy.aggregate import aggregate, aggregate_inplace
+
+    def one(n):
+        return (None, FitRes(status=Status(Code.OK, ""), num_examples=n, metrics={},
+                             parameters=ndarrays_to_parameters(
+                                 [np.array(89, dtype=np.int64)])))
+
+    assert int(aggregate_inplace([one(1400), one(1400)])[0]) == 0, \
+        "if this ever stops being 0, flwr fixed it and `inplace=False` can go"
+    assert float(aggregate([([np.array(89, dtype=np.int64)], 1400)] * 2)[0]) == 89.0, \
+        "the copying path is the one that keeps the counter"

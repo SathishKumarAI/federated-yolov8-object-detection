@@ -401,9 +401,17 @@ class FlowerClient(Client):
             reloaded_checksum = sum(float(t.sum()) for t in self.model.state_dict().values()
                                     if t.numel() and t.dtype.is_floating_point)
             trained_checksum = learning_checksum(updated_weights)
+            # The BatchNorm step counters ride along as int64 buffers and are the one
+            # part of the payload a float checksum cannot see. Logged because they are
+            # the cheapest evidence that the buffers travelled at all: the aggregate's
+            # counters were 0 on 2026-09-26 while a standalone probe of this same
+            # property showed 120, and a number nobody prints is a number nobody checks.
+            counters = [int(t) for k, t in self.trained_model.state_dict().items()
+                        if k.endswith("num_batches_tracked")] or [-1]
             logger.info(
                 f"[Client] trained weights checksum {trained_checksum}; the reloaded "
-                f"best.pt EMA would have sent {reloaded_checksum}")
+                f"best.pt EMA would have sent {reloaded_checksum}; BN counters "
+                f"min={min(counters)} max={max(counters)}")
 
             # FedProx: pull the locally-trained weights back toward the global model
             # by factor mu, i.e. w <- w - mu * (w - w_global). mu == 0 is plain FedAvg.
