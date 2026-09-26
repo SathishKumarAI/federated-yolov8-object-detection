@@ -77,7 +77,11 @@ console.assert(el("holdoutNote").innerHTML.includes("no scale"),
 
 // The band and its provenance: measured, and labelled with its conditions.
 const prov = el("holdoutProvenance").innerHTML;
-console.assert(prov.includes("0.0018"), `the noise floor is not cited: ${prov}`);
+// The ledger's own value, not a literal: this number is meant to be re-measured, and
+// a check that pins it fails on the improvement instead of on a mistake.
+const floor = String(FACTS.records.find((r) => r.id === "noise_floor_map50").value);
+console.assert(prov.includes(floor),
+  `the noise floor is not cited: ${prov}`);   // the ledger's value, not a literal
 console.assert(prov.includes("NOISE_FLOOR.md"), "the band must name its source document");
 console.assert(prov.includes("IID"), "the band must name the conditions it was measured at");
 console.assert(prov.includes("holdout: 1000 images"), `provenance line: ${prov}`);

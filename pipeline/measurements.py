@@ -112,20 +112,23 @@ RECORDS: list[dict] = [
        "0.4173 of 0.4936. Published work reaches 61.5 vs 61.4 on BDD100K, so this gap "
        "is this project's schedule and transport, not a law of federated detection.",
        "2026-08-06"),
-    _m("noise_floor_map50", "run-to-run spread in holdout mAP50", 0.0018, "mAP50",
-       "docs/NOISE_FLOOR.md", "0.0018",
-       "A delta smaller than this is not a measured difference. Measured at 2 rounds x 1 "
-       "local epoch on an IID fleet, n=3, max-min 0.0036, stdev 0.0019, same holdout in "
-       "every arm -- and a LOWER bound, because n=3 under-reports a spread. It replaces "
-       "an inferred +/-0.016 that was 8.9x too loose and was dismissing real "
-       "differences, FedBN's +0.0040 among them.",
+    _m("noise_floor_map50", "run-to-run spread in holdout mAP50", 0.0077, "mAP50",
+       "docs/NOISE_FLOOR.md", "0.0077",
+       "A delta smaller than this is not a measured difference. Re-measured on the fixed "
+       "transport: seeds 0/1/2 scored 0.2135 / 0.2207 / 0.2289 on the same holdout, mean "
+       "0.2210, max-min 0.0154, stdev 0.0077 -- and a LOWER bound, because n=3 "
+       "under-reports a spread. 4.3x looser than the +/-0.0018 it replaces, which was "
+       "measured the same way on the old transport.",
        "2026-09-26", bound="lower", confidence="measured",
-       conditions="2 rounds x 1 local epoch, IID fleet, n=3, same holdout in every arm",
-       superseded="+/-0.016, inferred from a centralised ceiling anomaly across two data "
-                  "volumes -- a statement about data volume, never a seed spread",
-       reopened_by="the transport fix and the imgsz lever, both 2026-09-26: variance "
-                   "measured under the old transport is variance of a different system, "
-                   "so this must be re-measured at 6x4 on a non-IID fleet"),
+       conditions="2 rounds x 1 local epoch, IID fleet, n=3, same holdout in every arm, "
+                  "post-transport-fix",
+       superseded="+/-0.0018, measured identically under the old weight transport. Its "
+                  "three arms are irreproducible on this code: 0.1193 / 0.1157 / 0.1186 "
+                  "then against 0.2135 / 0.2207 / 0.2289 now, with no overlap. Before "
+                  "that, an inferred +/-0.016 that was never a seed spread at all",
+       reopened_by="still measured at 2x1 on an IID fleet, while the headline runs 6x4 "
+                   "non-IID, where partitioning adds a second source of variance. The "
+                   "imgsz lever re-opens it again the first time a run uses it"),
     _m("warm_start_untrained", "holdout mAP50 of the untrained warm-started model",
        0.2582, "mAP50",
        "docs/PHASED_PLAN.md", "0.2582",

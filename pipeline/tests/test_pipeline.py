@@ -3252,14 +3252,19 @@ def test_the_noise_floor_is_the_measured_one_with_its_conditions():
     among them. The band must carry the conditions it was measured under, because a floor
     measured at 2x1 on an IID fleet is not a floor for a 6x4 non-IID run."""
     rec = _meas.BY_ID["noise_floor_map50"]
-    assert rec["value"] == 0.0018
+    # Not pinned to a literal. This number is meant to be re-measured -- it already has
+    # been twice -- and a test that pins it fails on the improvement rather than on a
+    # mistake. What must hold is that it is measured, bounded, conditioned, and that the
+    # document agrees; `measurements --check` enforces that last part byte for byte.
+    assert rec["value"] > 0
     assert rec["confidence"] == "measured" and rec["bound"] == "lower"
     assert "IID" in rec["conditions"] and "n=3" in rec["conditions"]
-    assert "0.016" in rec["superseded"]
+    assert rec["superseded"], "every version of this number replaced a worse one"
     assert rec["reopened_by"], "a floor that cannot go stale is a floor nobody re-measures"
     assert rec["source"] == "docs/NOISE_FLOOR.md"
     doc = (REPO / "docs" / "NOISE_FLOOR.md").read_text(encoding="utf-8")
-    assert "0.0018" in doc and "0.016" in doc and "n = 3" in doc
+    assert str(rec["value"]) in doc and "n = 3" in doc
+    assert "0.016" in doc, "the inferred figure it first replaced stays on the record"
 
 
 def test_an_observed_spread_needs_runs_that_differ_only_in_the_seed():
@@ -3354,7 +3359,7 @@ def test_the_projection_names_the_conditions_the_noise_floor_was_measured_under(
     pr = _projection(profile="full", per_vehicle_override=1400)
     row = next(r for r in pr["projections"]
                if r["name"] == "smallest difference this run could resolve")
-    assert row["value"] == 0.0018
+    assert row["value"] == _meas.value("noise_floor_map50")
     assert "IID" in row["how"] and "lower bound" in row["how"]
     assert "transport" in row["how"], "a stale floor must say what made it stale"
 
