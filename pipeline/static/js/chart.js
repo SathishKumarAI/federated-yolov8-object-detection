@@ -28,8 +28,14 @@ export function ticks(lo, hi, count) {
  *
  * spec = {
  *   series: [{label, color, values:[y|null], area?, dashed?, key?}],
- *   xLabel?: i => string, yFmt?: v => string, zero?: bool, focus?: key, aria?: string
+ *   xLabel?: i => string, yFmt?: v => string, zero?: bool, focus?: key, aria?: string,
+ *   band?: {lo, hi, label}   a horizontal region drawn BEHIND the series
  * }
+ *
+ * `band` exists for one reason: this project's measured run-to-run spread is wide
+ * enough to explain most of the deltas it has celebrated. A curve that stays inside
+ * the band has not moved, and that is a fact about the measurement rather than about
+ * the model -- so it is drawn, not left to the reader's arithmetic.
  */
 export function lineChart(id, spec) {
   const svg = $(id);
@@ -46,6 +52,8 @@ export function lineChart(id, spec) {
 
   const all = series.flatMap(s => s.values.filter(v => v != null));
   let lo = Math.min.apply(null, all), hi = Math.max.apply(null, all);
+  // The band has to be inside the visible range or it silently says nothing.
+  if (spec.band) { lo = Math.min(lo, spec.band.lo); hi = Math.max(hi, spec.band.hi); }
   if (spec.zero) lo = Math.min(0, lo);
   const pad = (hi - lo) * 0.12 || Math.abs(hi || 1) * 0.12;
   lo -= pad; hi += pad;
@@ -59,6 +67,19 @@ export function lineChart(id, spec) {
   const xLabel = spec.xLabel || (i => "r" + (i + 1));
 
   let g = "";
+  if (spec.band) {
+    const top = Math.min(y(spec.band.hi), y(spec.band.lo));
+    const h = Math.abs(y(spec.band.lo) - y(spec.band.hi));
+    g += `<rect x="${P.l}" y="${top}" width="${W - P.l - P.r}" height="${Math.max(1, h)}" ` +
+         `fill="var(--dim)" opacity="0.14"/>` +
+         `<line x1="${P.l}" y1="${y((spec.band.lo + spec.band.hi) / 2)}" x2="${W - P.r}" ` +
+         `y2="${y((spec.band.lo + spec.band.hi) / 2)}" stroke="var(--dim)" ` +
+         `stroke-dasharray="2 4"/>`;
+    if (spec.band.label) {
+      g += `<text x="${W - P.r - 4}" y="${top - 4}" text-anchor="end" fill="var(--dim)" ` +
+           `font-size="10" font-family="var(--mono)">${esc(spec.band.label)}</text>`;
+    }
+  }
   for (const v of yt) {
     g += `<line x1="${P.l}" y1="${y(v)}" x2="${W - P.r}" y2="${y(v)}" stroke="var(--line-soft)"/>` +
          `<text x="${P.l - 8}" y="${y(v) + 3.5}" text-anchor="end" fill="var(--dim)" ` +
@@ -94,7 +115,9 @@ export function lineChart(id, spec) {
   svg.innerHTML = g;
   const last = series[0].values.filter(v => v != null).slice(-1)[0];
   svg.setAttribute("aria-label", `${spec.aria || id}. ${n} points, latest ` +
-    `${last == null ? "none" : yFmt(last)}, range ${yFmt(lo)} to ${yFmt(hi)}.`);
+    `${last == null ? "none" : yFmt(last)}, range ${yFmt(lo)} to ${yFmt(hi)}.` +
+    (spec.band ? ` Shaded band ${yFmt(spec.band.lo)} to ${yFmt(spec.band.hi)}: ` +
+                 `${spec.band.label || "indistinguishable from the first point"}.` : ""));
   svg._spec = { series, n, x, y, yFmt, xLabel, P, W, H };
 }
 

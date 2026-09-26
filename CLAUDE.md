@@ -21,6 +21,7 @@ whole flow and visualises a simulated vehicle fleet while it runs.
 | What should I build? | [`docs/BACKLOG_100.md`](docs/BACKLOG_100.md) |
 | **Are the shards' pixels and labels actually what they claim?** | [`docs/DATA_VALIDATION.md`](docs/DATA_VALIDATION.md) |
 | **Why is accuracy where it is, and what do the papers say?** | [`docs/findings/2026-09-26-accuracy-findings.md`](docs/findings/2026-09-26-accuracy-findings.md) |
+| **What counts as a result, and when does that number go stale?** | [`docs/NOISE_FLOOR.md`](docs/NOISE_FLOOR.md) |
 | How do I run any of it? | [`pipeline/README.md`](pipeline/README.md) |
 | Where did the last session stop? | [`STATUS.md`](STATUS.md) and `docs/prompts/` |
 
@@ -32,12 +33,21 @@ Open the one file that owns the thing. Do not read the package to find it.
 |---|---|
 | A dashboard panel's look, or any colour, spacing, type | `pipeline/static/app.css` |
 | Dashboard markup, a new panel, an element id | `pipeline/static/index.html` |
-| Chart axes, ticks, tooltips, sparkline | `pipeline/static/js/chart.js` |
+| Chart axes, ticks, tooltips, sparkline, the noise band | `pipeline/static/js/chart.js` |
+| How state reaches the browser, and the polling fallback | `pipeline/static/js/stream.js` |
+| Checksum ledger, per-class small multiples, round profile, provenance | `pipeline/static/js/insight.js` |
+| The projection form | `pipeline/static/js/simulate.js` |
+| The demo/help walkthrough and its steps | `pipeline/static/js/tour.js` |
+| A run lever's caveat, or which levers the form offers | `pipeline/measurements.py` `LEVER_NOTES`, `pipeline/server.py` `LEVERS` |
 | The fleet grid / vehicle drawer / live polling / run form | `pipeline/static/js/{fleet,drawer,live,control}.js` |
 | Label boxes drawn over a frame, the trainer's own pictures | `pipeline/static/js/consumed.js` |
 | Which of ultralytics' output pictures are served, and their captions | `pipeline/train_artifacts.py` — `KINDS` |
 | An HTTP route or what `/api/state` returns | `pipeline/server.py` |
 | Real SuperLink/SuperNode processes instead of the simulator | `pipeline/deploy.py` |
+| The state push: the diff format, the sequence, the SSE frames | `pipeline/statestream.py` |
+| **A measured number the UI quotes, or its provenance** | `pipeline/measurements.py` — nowhere else |
+| What the demo/help walkthrough replays, and what it admits it lacks | `pipeline/demo_run.py` |
+| What a configuration would cost, and what it refuses to project | `pipeline/plan.py` |
 | The live edge fleet: what a node may report, and its bounds | `pipeline/nodes.py` |
 | The edge node itself — camera, inference, heartbeat | `pipeline/edge.py` |
 | The live-nodes panel | `pipeline/static/js/edge.js` |

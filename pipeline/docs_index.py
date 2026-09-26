@@ -91,11 +91,37 @@ ROLES: dict[str, dict] = {
         "tab": "Data",
     },
     "plan": {
-        "command": "python -m pipeline.plan --profile full --rounds 6 --epochs 4",
+        "command": "python -m pipeline.plan --project --vehicles 6 --rounds 6 --epochs 4",
         "contributes": "The budget arithmetic both sides of a comparison must agree "
-                       "on. Its absence is why a centralised ceiling once ran with "
-                       "1.667x the federation's image-visits.",
-        "tab": "Plan",
+                       "on -- its absence is why a centralised ceiling once ran with "
+                       "1.667x the federation's image-visits -- and the projection "
+                       "behind the Simulate tab, which refuses to extrapolate past the "
+                       "measurements it rests on rather than inventing a number.",
+        "tab": "Plan, Simulate",
+    },
+    "measurements": {
+        "command": "python -m pipeline.measurements --check",
+        "contributes": "Every number this project measured once and now quotes, with "
+                       "the document that records it. --check re-reads those documents "
+                       "and fails on drift, so the dashboard cannot cite a file that "
+                       "no longer says that.",
+        "tab": "all",
+    },
+    "demo_run": {
+        "command": "python -m pipeline.demo_run",
+        "contributes": "One recorded run, replayable with no GPU and no data, in the "
+                       "shape /api/state returns -- so the walkthrough teaches with the "
+                       "real panels. Every number is transcribed from a document here, "
+                       "and the fields nobody measured are absent with a written reason.",
+        "tab": "Live",
+    },
+    "statestream": {
+        "command": "python -m pipeline.statestream",
+        "contributes": "The diff format behind the dashboard's push stream. An idle "
+                       "page costs a keep-alive comment instead of the whole snapshot "
+                       "every two seconds, and a dropped change is a test failure "
+                       "rather than a stale panel.",
+        "tab": "all",
     },
     "ledger": {
         "command": "python -m pipeline.ledger",
@@ -172,6 +198,10 @@ TABS = [
                                    "cost, and was the model still learning when the "
                                    "round ended?",
      "reads": "ledger, from the reports each run already wrote"},
+    {"name": "Simulate", "answers": "What would a configuration cost before it costs a "
+                                    "GPU hour, and which of my questions can this "
+                                    "project's measurements not answer at all?",
+     "reads": "plan.project over measurements.RECORDS; refuses to extrapolate"},
     {"name": "Docs", "answers": "What is each program for, and which number does it "
                                 "contribute to?",
      "reads": "this module, from the packages' own docstrings"},

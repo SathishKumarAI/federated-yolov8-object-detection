@@ -10,7 +10,11 @@ reload. ES modules, no bundler, no CDN, no network at runtime.
 | Page structure, a new panel, an element's `id` | `index.html` | markup only, no styles, no script |
 | Axes, ticks, tooltips, sparkline, progress ring | `js/chart.js` | the only file that draws SVG plots |
 | The run form, launch/stop, the stage table | `js/control.js` | |
-| Polling, heartbeat, GPU readouts, criteria, log stream | `js/live.js` | |
+| How state ARRIVES — the event stream, the diff apply, the fallback | `js/stream.js` | |
+| The heartbeat, GPU readouts, criteria, reports, log stream | `js/live.js` | |
+| Checksum ledger, per-class small multiples, round profile, provenance | `js/insight.js` | the panels that make a number harder to believe |
+| The Simulate tab: the projection form and its table | `js/simulate.js` | the maths is server-side in `plan.py` |
+| The walkthrough: its steps, its keyboard, the replay | `js/tour.js` | the recording is `pipeline/demo_run.py` |
 | The fleet grid, the comparison and divergence charts | `js/fleet.js` | |
 | The per-vehicle drawer | `js/drawer.js` | |
 | The Data tab: counts, mixes, the shard table | `js/data.js` | |
@@ -32,10 +36,21 @@ reload. ES modules, no bundler, no CDN, no network at runtime.
    handle the cycle, because both are called only after load.
 4. **Everything the page shows comes from `/api/state`,** which the server derives
    from files on disk. That is why a run launched from the CLI lights up the same
-   panels as one launched from the form. The event stream is a latency optimisation,
-   never the only source of a value.
-5. **A new condition profile touches two files** — `PROFILES` in
+   panels as one launched from the form. `/api/stream` pushes that same value as a
+   snapshot then numbered diffs — a latency and bandwidth optimisation, never a
+   second source of truth, and `stream.js` refetches `/api/state` whole if a
+   sequence number ever skips.
+5. **A view is handed a whole snapshot.** `stream.js` applies the diffs; no view
+   ever sees a patch. A panel that needed to know about the transport would be a
+   panel that breaks when the fallback poll kicks in.
+6. **A new condition profile touches two files** — `PROFILES` in
    `pipeline/vehicles.py` and `GLYPHS` in `js/util.js`. Add both in the same commit.
+7. **A value the server does not have renders as `unknown()`, never as a dash.** A
+   dash reads as data, and `0` reads as a measurement. `unknown()` says "not
+   measured" and carries the reason.
+8. **A number on screen cites where it was measured.** The record lives in
+   `pipeline/measurements.py`, whose `--check` mode re-reads the document it names.
+   A panel that prints a figure with no row there is a bug.
 
 ## Server routes it depends on
 
@@ -43,8 +58,13 @@ reload. ES modules, no bundler, no CDN, no network at runtime.
 |---|---|
 | `GET /` | `index.html` |
 | `GET /static/...` | this directory, guarded against traversal |
-| `GET /api/state` | everything the panels render |
+| `GET /api/state` | everything the panels render, in one response |
+| `GET /api/stream` | SSE: that same state as a snapshot then numbered diffs |
 | `GET /api/events` | SSE: log lines, stage transitions, signals |
+| `GET /api/measurements` | every recorded number the page cites, with its source |
+| `GET /api/profile` | seconds per phase for the last run, plus the verdict |
+| `GET /api/simulate?...` | a projection for an arbitrary configuration; read-only |
+| `GET /api/demo` | a recorded run in /api/state's shape, its sources, and its gaps |
 | `GET /api/vehicle/<vid>` | shard composition and sample image names |
 | `GET /api/shard-image/<vid>/<name>` | one image out of that vehicle's shard |
 | `GET /api/shard-labels/<vid>/<name>` | that frame's label rows, normalised, for the overlay |

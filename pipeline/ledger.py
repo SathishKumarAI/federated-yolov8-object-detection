@@ -28,6 +28,36 @@ from . import paths
 APPROACH_KEYS = ("strategy", "partition", "alpha", "size_skew", "profile", "n_vehicles",
                  "rounds", "local_epochs", "per_vehicle", "seed")
 
+#: Run levers that only exist after 2026-09-26. Their presence in a report's config is
+#: the discriminator for which transport produced the run -- see `era` below.
+LEVER_KEYS = ("freeze_round1", "server_ema", "fix_bn_from_round", "imgsz", "local_bn")
+
+
+def era(cfg: dict) -> dict:
+    """Which weights this run's clients actually sent back.
+
+    Until 2026-09-26 every client returned the fp16-rounded EMA of its own `best.pt`
+    rather than the weights it had trained, and FedAvg averaged that. Runs from before
+    and after that fix are measurements of two different systems, so plotting them as one
+    series compares nothing -- and there is no timestamp to sort on, because a report's
+    `generated` field says when the report was written, not what code wrote it.
+
+    The lever fields are the usable discriminator: they cannot appear in a config a
+    pre-fix runner produced.
+    """
+    new_levers = [k for k in LEVER_KEYS if k in cfg]
+    if new_levers:
+        return {"transport": "trained-fp32", "since": "2026-09-26",
+                "evidence": f"config carries {', '.join(sorted(new_levers))}",
+                "comparable_with_older": False,
+                "note": "Clients return the fp32 weights they trained."}
+    return {"transport": "ema-fp16-best", "since": None,
+            "evidence": "config carries none of the post-2026-09-26 run levers",
+            "comparable_with_older": False,
+            "note": "Clients returned the fp16-rounded EMA of their own best.pt, chosen "
+                    "on a 280-image local val split, and FedAvg averaged that. Not "
+                    "comparable with a run made after the 2026-09-26 transport fix."}
+
 
 def _report_files(limit: int | None = None) -> list[Path]:
     if not paths.REPORTS.is_dir():
@@ -81,6 +111,10 @@ def row(data: dict, name: str) -> dict:
         "generated": data.get("generated"),
         "approach": approach(cfg),
         "config": {k: cfg.get(k) for k in APPROACH_KEYS},
+        "levers": {k: cfg[k] for k in LEVER_KEYS if k in cfg},
+        # Not cosmetic: two rows in different eras are two different systems, and the
+        # Metrics tab refuses to plot them as one series.
+        "era": era(cfg),
         "data": {"images": images, "image_visits": visits,
                  "per_vehicle": cfg.get("per_vehicle"),
                  "vehicles": cfg.get("n_vehicles"),

@@ -157,3 +157,58 @@ ceiling on the same 201 600 image-visits:
 obviously wrong — the centralised arm has no federation to break — but the federated number
 is the average of fp16 EMAs of per-client best epochs, and it has to be re-run before it
 means what it says.
+
+---
+
+## The dashboard, 2026-09-26 — `feat/dashboard-2030`, merged into `feat/accuracy-program`
+
+Built on a separate branch in its own worktree. Six commits, 206
+pipeline tests green, no GPU touched. What changed, and where to pick it up.
+
+### What it does now
+
+| | |
+|---|---|
+| transport | `/api/stream` pushes `/api/state` as a snapshot then numbered diffs, woken by the event bus. One shared snapshot with a 0.35 s TTL serves every tab. Idle: 3 801 B + 1 155 B of patches per six seconds, against 11 403 B for the old 2 s poll. `/api/state` unchanged and still the resync path |
+| provenance | `pipeline/measurements.py` is the one place a measured number lives, each with the document that records it. `--check` re-reads those documents and fails on drift — it caught two wrong citations the day it was written |
+| the band | the holdout chart draws the run-to-run spread, labelled with its conditions, and **prefers an observed spread** from this machine's own seed repeats when the ledger has any. It has none yet |
+| refusals | the Simulate tab projects cost and **refuses** any lever outside its measured range, naming the measurement that would lift the refusal. It projects no mAP at all |
+| walkthrough | eleven steps, keyboard-only navigation, `?` to open. With no run it replays `pipeline/demo_run.py`; with one it narrates that |
+
+### The next action
+
+**Merged 2026-09-26.** The three predicted conflicts were the only ones, all additive:
+
+1. `do_POST` in `pipeline/server.py` — the accuracy branch wires the five lever body
+   fields; this branch does not touch that block, but both edit the file.
+2. `CLAUDE.md` — both add rows to the "Where to change it" table.
+3. `pipeline/measurements.py` `noise_floor_map50` cites `docs/NOISE_FLOOR.md`, written here
+   because this branch predates the `CLAUDE.md` revision that carries fact 11. **When the
+   two disagree, `CLAUDE.md` is right**; that is written into the doc.
+
+The lever controls turn themselves on when the accuracy branch merges: `options.levers` is
+derived from `Config.__dataclass_fields__`, so no edit is needed. Until then the form
+disables them and says the server has no such field, rather than posting into a void.
+
+### Traps this branch hit
+
+- **A module-scope `setInterval` hangs the node checks.** `stream.js` started a timer at
+  import; the JS test runner waits for an event loop that never drains. Timers now start
+  inside `connectState`.
+- **`f"{1.0:g}"` is `"1"`.** The packing record's key is `"1.0"`, so the wall-clock divisor
+  and the hazard note both silently vanished at `gpu_fraction 1.0` — the one setting
+  actually in use — and the projection still looked complete. `measurements.packing()`
+  matches on the float now.
+- **`drawer.js` registers its own `keydown` at import time.** The walkthrough's keyboard
+  check picked that handler up first and passed vacuously; it now captures only the
+  listeners `wireTour()` itself adds.
+- **A browser was never available.** The Chrome DevTools MCP profile stayed locked by
+  another session. `pipeline/tests/js/live_render.mjs` renders a whole real payload through
+  the real panels under node instead, and it found a live `ReferenceError` that reading the
+  code had not.
+
+### Left undone on purpose
+
+Shard composition against what a condition can actually supply. The measurement lives in
+`docs/DATA_VALIDATION.md` and `pipeline/spotcheck.py`, neither on `main`, and this machine
+has no shards on disk — so it could only have been written, not verified.

@@ -310,3 +310,126 @@ input[type=search]{width:100%}
 tr.runrow{cursor:pointer}
 tr.runrow:hover td{background:var(--sunk)}
 tr.runrow[data-sel=true] td{background:var(--sunk);box-shadow:inset 2px 0 0 var(--accent)}
+
+/* ------------------------------------------------ truth-density (insight.js)
+   Three components, and none of them is decoration:
+   .unk   a value the server does not have, which must not look like a zero
+   .prov  where a number came from, in the smallest type that is still readable
+   .cls   one class's AP row, with a cold-start marker that is not colour-only */
+.unk{font:500 var(--t-xs)/1.4 var(--mono);color:var(--dim);border:1px dashed var(--line);
+     border-radius:var(--r1);padding:1px 6px;letter-spacing:.02em;white-space:nowrap}
+.prov{font:500 var(--t-xs)/1.6 var(--mono);color:var(--dim)}
+.prov b{color:var(--ink-2)}
+.cite{border-bottom:1px dotted var(--dim);cursor:help}
+.dim{color:var(--dim)}
+
+/* The checksum ledger sits under the heartbeat chart: the delta column is the panel's
+   actual argument, so it is monospaced and right of the value it came from. */
+table.ledger{margin-top:var(--s4)}
+table.ledger td.num,table.ledger th{font-variant-numeric:tabular-nums}
+
+/* Per-class small multiples. A grid rather than a table because each row carries a
+   bar, a sparkline and a metadata line, and a table cell holding all three reads
+   worse than a card does. */
+.classes{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:var(--s3)}
+.cls{background:var(--sunk);border:1px solid var(--line-soft);border-radius:var(--r2);
+     padding:var(--s3)}
+/* Cold-started classes get a left rule AND the words "cold start" -- never colour
+   alone, because the whole claim rests on telling these four from the other nine. */
+.cls.cold{border-left:3px solid var(--warn)}
+.cls .nm{display:flex;align-items:baseline;gap:var(--s2);font-weight:600;
+         font-size:var(--t-md)}
+.cls .nm abbr{margin-left:auto;font:600 10px/1.6 var(--mono);color:var(--warn);
+              text-transform:uppercase;letter-spacing:.06em;text-decoration:none;
+              border:1px solid currentColor;border-radius:999px;padding:0 6px;cursor:help}
+.cls .ap{position:relative;margin:var(--s2) 0;background:var(--bg-2);border-radius:var(--r1);
+         border:1px solid var(--line-soft);padding:2px 7px;overflow:hidden}
+.cls .ap>i{position:absolute;inset:0 auto 0 0;background:var(--accent);opacity:.2}
+.cls.cold .ap>i{background:var(--warn)}
+.cls .ap>span{position:relative;font:600 var(--t-sm)/1.5 var(--mono);
+              font-variant-numeric:tabular-nums}
+.cls .spark{display:block;width:100%;height:32px}
+.cls .spark-none{font:500 var(--t-xs)/32px var(--mono)}
+.cls .meta{font:500 var(--t-xs)/1.5 var(--mono);color:var(--dim);margin-top:4px}
+
+/* Visually hidden but read aloud. For a table caption that would otherwise duplicate
+   the panel heading on screen. */
+.sr-only{position:absolute;width:1px;height:1px;margin:-1px;padding:0;overflow:hidden;
+         clip:rect(0 0 0 0);white-space:nowrap;border:0}
+
+#profileVerdict li{align-items:center}
+#profileRefresh{padding:4px 10px;font-size:var(--t-xs);text-transform:none;letter-spacing:0}
+
+/* ------------------------------------------------- simulate tab (simulate.js)
+   A projection has to look like a projection. The banner is the only panel on the
+   page with a tinted ground, and a refused row is struck through rather than left
+   blank -- blank reads as "still loading". */
+.sim-banner{border-color:var(--accent-dim);background:
+  linear-gradient(0deg,color-mix(in srgb,var(--accent) 6%,var(--panel)),var(--panel))}
+.refused{font:600 var(--t-xs)/1.5 var(--mono);color:var(--bad);text-transform:uppercase;
+         letter-spacing:.06em;border:1px solid currentColor;border-radius:var(--r1);
+         padding:1px 6px}
+tr.refused-row td{opacity:.75}
+tr.refused-row td:first-child b{text-decoration:line-through;text-decoration-color:var(--bad)}
+#simAdopt{font-weight:600}
+
+/* --------------------------------------------------------- walkthrough (tour.js)
+   A dialog, not a tooltip trail: keyboard-reachable, dismissible, and impossible to
+   lose behind the page. The scrim is deliberately light -- the point of the step is
+   the panel behind it, so the page has to stay readable. */
+.helpbtn{padding:5px 12px;font-size:var(--t-sm)}
+#tour{position:fixed;inset:auto 0 0 0;z-index:50;display:flex;justify-content:center;
+      padding:0 var(--s4) var(--s4);pointer-events:none}
+.tourcard{pointer-events:auto;width:min(680px,100%);background:var(--panel);
+          border:1px solid var(--accent-dim);border-radius:var(--r3);box-shadow:var(--shadow);
+          padding:var(--s4)}
+.tourcard header{display:flex;align-items:center;gap:var(--s3);padding:0;border:0;
+                 background:none;position:static}
+.tourcard header h2{margin:0;font:650 var(--t-lg)/1.3 var(--sans);letter-spacing:-.015em}
+.tourcard header .n{margin-left:auto;font:500 var(--t-xs)/1 var(--mono);color:var(--dim)}
+.tourcard #tourBody{margin:var(--s3) 0}
+.tourcard #tourBody p{margin:0 0 var(--s3);font-size:var(--t-md);color:var(--ink-2)}
+.tourcard .mistake{border-left:2px solid var(--warn);padding-left:var(--s3)}
+.tourcard .mistake .lbl{display:block;font:600 var(--t-xs)/1.6 var(--mono);color:var(--warn);
+                        text-transform:uppercase;letter-spacing:.08em}
+.tourcard footer{display:flex;align-items:center;gap:var(--s2)}
+.tourcard .hint{margin-top:var(--s3)}
+kbd{font:600 var(--t-xs)/1.4 var(--mono);border:1px solid var(--line);border-bottom-width:2px;
+    border-radius:var(--r1);padding:1px 5px;background:var(--sunk)}
+
+/* The step's panel. A ring AND a brightened border, because the highlight must survive
+   a reader who cannot distinguish the accent from the default line colour. */
+[data-tour-lit]{outline:2px solid var(--accent);outline-offset:3px;border-color:var(--accent)}
+body[data-tour="1"] main{padding-bottom:280px}
+
+.demobanner{margin:var(--s3) var(--s5) 0;padding:10px 14px;border-radius:var(--r2);
+            border:1px solid var(--warn);color:var(--warn);font-size:var(--t-md)}
+.demobanner p{margin:0}
+.demobanner b{color:var(--warn)}
+.demobanner em{font-style:normal;font-family:var(--mono);font-size:var(--t-sm)}
+
+/* --------------------------------------------------------- run levers (control.js)
+   A lever this server cannot apply is struck out and disabled, never merely greyed:
+   greyed-out reads as "not set yet", and a control that posts into a void while
+   looking enabled is the exact no-op shape this project keeps shipping. */
+.subhead{font:600 var(--t-xs)/1.4 var(--mono);text-transform:uppercase;letter-spacing:.12em;
+         color:var(--dim);margin:var(--s5) 0 var(--s3);display:flex;align-items:center;
+         gap:var(--s2)}
+.subhead .n{margin-left:auto;font-weight:500;letter-spacing:.04em;text-transform:none}
+.levers .lever[data-unsupported="true"] label{text-decoration:line-through;
+                                              text-decoration-color:var(--bad)}
+.levers .lever[data-unsupported="true"]::after{content:"not on this server";
+  display:block;margin-top:3px;font:600 10px/1.4 var(--mono);color:var(--bad);
+  text-transform:uppercase;letter-spacing:.06em}
+#leverHelp{margin-top:var(--s3)}
+#leverHelp summary{cursor:pointer;color:var(--dim);font:500 var(--t-sm)/1.6 var(--mono)}
+#leverHelp summary:hover{color:var(--ink)}
+.lever-note{max-width:none}
+#leverWarnings .hint{margin-top:var(--s2)}
+
+/* A packing that has crashed a run is not a refusal and not a projection: it is a
+   third thing, and it needs to read as a warning rather than as a value. */
+.hazard{font:600 var(--t-xs)/1.5 var(--mono);color:var(--warn);text-transform:uppercase;
+        letter-spacing:.06em;border:1px solid currentColor;border-radius:var(--r1);
+        padding:1px 6px}
+tr.hazard-row td{background:color-mix(in srgb,var(--warn) 7%,transparent)}
