@@ -3046,3 +3046,20 @@ def test_the_projection_says_whether_this_server_can_pull_each_lever():
 def test_the_run_form_posts_only_the_levers_the_server_implements(tmp_path):
     """Executed under node, because the rule is about what leaves the browser."""
     _run_js_check(tmp_path, "run_levers.mjs")
+
+
+def test_a_whole_snapshot_renders_through_the_real_panels(tmp_path):
+    """The closest thing to loading the page that runs without a browser.
+
+    One `$("typo")` in a render path throws, the whole pass dies, and the symptom is a
+    page that renders its chrome and then never updates -- no error anywhere a user can
+    see. The module-load check catches a module that will not parse; this one catches a
+    module that parses and then falls over on real data.
+
+    Both fixtures come from the server's own code, so this is the payload the browser
+    would actually receive.
+    """
+    _run_js_check(tmp_path, "live_render.mjs", extra={
+        "state.json": json.dumps(_demo.state()),
+        "facts.json": json.dumps({**_meas.table(), "observed_spread": None}),
+    })

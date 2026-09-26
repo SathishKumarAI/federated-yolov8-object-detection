@@ -146,7 +146,7 @@ function renderHoldout(holdout, baseline) {
   $("hCeiling").innerHTML = baseline && baseline.retained
     ? (100 * baseline.retained).toFixed(0) + "%"
     : unknown("no centralised baseline has been trained, so this number has no scale");
-  renderHoldoutProvenance(holdout, baseline, rows, floor);
+  renderHoldoutProvenance(holdout, baseline, rows, floor, obs);
 
   if (!rows.length) {
     $("holdoutNote").innerHTML = "No holdout evaluation yet. Run the " +
@@ -173,7 +173,7 @@ function renderHoldout(holdout, baseline) {
 }
 
 /** Which run, which holdout, which fingerprint — and where the ± comes from. */
-function renderHoldoutProvenance(holdout, baseline, rows, floor) {
+function renderHoldoutProvenance(holdout, baseline, rows, floor, obs) {
   const meta = (holdout && holdout.holdout) || {};
   const fr = record("noise_floor_map50");
   const bits = [
