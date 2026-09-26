@@ -21,7 +21,7 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from urllib.parse import unquote
+from urllib.parse import parse_qs, unquote
 
 from . import (baseline, dataset_stats, docs_index, gpu, holdout, ledger, logparse,
                measurements, nodes, paths, plan, profile as profiler, stages,
@@ -286,6 +286,11 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(docs_index.index())
         if self.path.split("?")[0] == "/api/plan":
             return self._json(plan.plan(CONFIG))
+        if self.path.split("?")[0] == "/api/simulate":
+            # Read-only and side-effect free: it starts nothing, writes nothing, and
+            # touches no global. A GET on purpose, so it adds nothing to the mutating
+            # surface that POST /api/run already is.
+            return self._simulate()
         if self.path.split("?")[0] == "/api/measurements":
             # Static and tiny: the provenance every panel cites. Deliberately NOT part
             # of /api/state -- it never changes while the server runs, so putting it in
@@ -380,6 +385,51 @@ class Handler(BaseHTTPRequestHandler):
         if target is None or target.suffix not in self.STATIC_TYPES:
             return self._json({"error": "not found"}, 404)
         self._send(200, target.read_bytes(), self.STATIC_TYPES[target.suffix])
+
+    #: What a projection query may set, and how to read it. Anything else in the query
+    #: string is ignored rather than guessed at -- the panel and this table are the
+    #: contract, and a mistyped parameter silently changing nothing is better than one
+    #: silently being interpreted.
+    SIM_FIELDS = {
+        "vehicles": ("n_vehicles", int), "rounds": ("rounds", int),
+        "epochs": ("local_epochs", int), "per_vehicle": ("per_vehicle_override", int),
+        "seed": ("seed", int), "partition": ("partition", str),
+        "strategy": ("strategy", str), "alpha": ("alpha", float),
+        "size_skew": ("size_skew", float), "gpu_fraction": ("gpu_fraction", float),
+        "profile": ("profile", str),
+    }
+
+    def _simulate(self) -> None:
+        """Project an arbitrary configuration. Changes nothing, starts nothing."""
+        query = parse_qs(self.path.partition("?")[2])
+        fields: dict = {}
+        for name, (attr, cast) in self.SIM_FIELDS.items():
+            raw = (query.get(name) or [None])[0]
+            if raw in (None, ""):
+                continue
+            try:
+                fields[attr] = cast(raw)
+            except (TypeError, ValueError):
+                return self._json({"error": f"{name}={raw!r} is not a {cast.__name__}"}, 400)
+        # Validated here rather than three layers down, and refused rather than silently
+        # corrected: a projection of a configuration the run form would reject is a
+        # projection of something that cannot happen.
+        if fields.get("partition", Config.partition) not in vehicles.PARTITIONS:
+            return self._json({"error": f"unknown partition {fields['partition']!r}"}, 400)
+        if fields.get("strategy", Config.strategy) not in stages.STRATEGIES:
+            return self._json({"error": f"unknown strategy {fields['strategy']!r}"}, 400)
+        if not 0 < fields.get("gpu_fraction", 1.0) <= 1:
+            return self._json({"error": "gpu_fraction must be in (0, 1]"}, 400)
+        try:
+            cfg = Config(**fields)
+        except TypeError as e:
+            return self._json({"error": str(e)}, 400)
+        raw_imgsz = (query.get("imgsz") or [None])[0]
+        try:
+            imgsz = int(raw_imgsz) if raw_imgsz else None
+        except ValueError:
+            return self._json({"error": f"imgsz={raw_imgsz!r} is not an integer"}, 400)
+        self._json(plan.project(cfg, imgsz))
 
     def _vehicle(self) -> None:
         """Shard composition for one vehicle, for the detail drawer."""

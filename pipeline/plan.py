@@ -8,7 +8,18 @@ equivalent command is.
 That arithmetic being in somebody's head rather than on screen is exactly how a
 baseline shipped this morning with 1.667x the federation's budget.
 
+It does two things, and the second is what the Simulate tab is:
+
+* `plan(cfg)` -- the budget, the stages, the warnings and the equivalent commands for
+  the configuration the server is holding.
+* `project(cfg, imgsz)` -- the same arithmetic for an *arbitrary* configuration, with
+  every projection naming the measurement it rests on and a refusal for every lever
+  pushed outside the range that measurement covers. It projects cost, never accuracy:
+  one configuration's end-to-end result is recorded, and predicting another's from it
+  would be a fabricated number carrying a measured one's confidence.
+
     python -m pipeline.plan --profile full --vehicles 6 --rounds 6 --epochs 4
+    python -m pipeline.plan --project --vehicles 6 --per-vehicle 1400 --rounds 6 --epochs 4
 """
 from __future__ import annotations
 
@@ -106,6 +117,260 @@ def plan(cfg: Config) -> dict:
     }
 
 
+# --------------------------------------------------------------------------
+# Projection: what a configuration would cost, before it costs it
+#
+# Everything below is arithmetic over `measurements.RECORDS`. Nothing here predicts an
+# mAP, and that is deliberate: the only end-to-end result this project has recorded is
+# one configuration, so a predicted accuracy for a different one would be a fabricated
+# number wearing a measured one's clothes. What is projected is cost -- which really was
+# measured -- plus what size of difference the run could resolve at all.
+# --------------------------------------------------------------------------
+
+#: The one configuration whose end-to-end result is recorded. Every projection says how
+#: far the configuration being asked about is from this, because that distance is the
+#: honest answer to "what will I get".
+#: Source: STATUS.md, "The result this project exists to produce".
+REFERENCE_RUN = {
+    "vehicles": 6, "per_vehicle": 1400, "rounds": 6, "local_epochs": 4,
+    "partition": "condition", "strategy": "fedavg", "imgsz": 640, "gpu_fraction": 1.0,
+    "holdout_mAP50": 0.4173, "retained": 0.845, "seconds": 3296, "wh": 82.2,
+    "source": "STATUS.md",
+}
+
+#: Where each lever was actually measured. Outside one of these the projection is
+#: REFUSED rather than extrapolated -- and it names the measurement that would be
+#: needed, so the refusal is an instruction rather than a shrug.
+MEASURED_RANGES = {
+    "imgsz": {
+        "points": [320, 640],
+        "source": "docs/PHASED_PLAN.md",
+        "needed": "a timed run at that resolution; cost is assumed proportional to "
+                  "pixel count and that assumption has only been checked at 320 and 640",
+    },
+    "per_vehicle": {
+        "lo": 300, "hi": 6308,
+        "source": "CLAUDE.md",
+        "needed": "a run at that shard size; VRAM is measured at 1 400 and at 6 308 and "
+                  "is not linear between them",
+    },
+    "vehicles": {
+        "lo": 2, "hi": 8,
+        "source": "pipeline/vehicles.py PROFILES",
+        "needed": "more condition profiles: beyond 8 the extras repeat conditions, so "
+                  "a 9-vehicle fleet is not a 9-condition fleet",
+    },
+    "gpu_fraction": {
+        "points": [0.33, 0.5, 1.0],
+        "source": "CLAUDE.md",
+        "needed": "a timed run at that packing; the three measured settings are the "
+                  "ones Ray was actually run at",
+    },
+}
+
+
+def _refusal(lever: str, asked, allowed: str) -> dict:
+    r = MEASURED_RANGES[lever]
+    return {"lever": lever, "asked": asked, "measured": allowed,
+            "source": r["source"], "needed": r["needed"]}
+
+
+def _out_of_range(cfg: Config, imgsz: int) -> list[dict]:
+    """Every lever the caller pushed outside what was measured."""
+    out = []
+    if imgsz not in MEASURED_RANGES["imgsz"]["points"]:
+        out.append(_refusal("imgsz", imgsz,
+                            " or ".join(str(p) for p in MEASURED_RANGES["imgsz"]["points"])))
+    pv = MEASURED_RANGES["per_vehicle"]
+    if not pv["lo"] <= cfg.per_vehicle <= pv["hi"]:
+        out.append(_refusal("per_vehicle", cfg.per_vehicle, f"{pv['lo']}-{pv['hi']}"))
+    ve = MEASURED_RANGES["vehicles"]
+    if not ve["lo"] <= cfg.n_vehicles <= ve["hi"]:
+        out.append(_refusal("vehicles", cfg.n_vehicles, f"{ve['lo']}-{ve['hi']}"))
+    if cfg.gpu_fraction not in MEASURED_RANGES["gpu_fraction"]["points"]:
+        out.append(_refusal("gpu_fraction", cfg.gpu_fraction,
+                            ", ".join(str(p) for p in MEASURED_RANGES["gpu_fraction"]["points"])))
+    return out
+
+
+def _vram(per_vehicle: int, gpu_fraction: float) -> dict:
+    """Peak VRAM, as the bracket it was measured as rather than a fitted line.
+
+    5 087 MiB at 1 400 images and ~15 900 at 6 308 are not two points on a line -- the
+    300-image demo also peaks near 5 GB, so the curve is flat and then steep and nobody
+    here has measured its shape. Reporting a single interpolated number would be
+    inventing the shape, so a shard between the two measured sizes gets the bracket.
+    """
+    small = measurements.value("vram_peak_1400")
+    large = measurements.value("vram_peak_full")
+    ceiling = measurements.BY_ID["vram_peak_1400"]["ceiling_mib"]
+    clients = max(1, round(1.0 / gpu_fraction))
+
+    if per_vehicle <= 1400:
+        lo = hi = small
+        how = (f"measured at 1 400 images/vehicle, and flat below it -- the 300-image "
+               f"demo peaks near the same {small} MiB")
+    else:
+        lo, hi = small, large
+        how = (f"between the two sizes it was measured at: {small} MiB at 1 400 and "
+               f"{large} MiB at 6 308. The curve between them is NOT measured, so this "
+               f"is a bracket, not an estimate")
+
+    return {
+        "clients_on_the_card": clients,
+        "per_client_lo_mib": lo, "per_client_hi_mib": hi,
+        "total_lo_mib": lo * clients, "total_hi_mib": hi * clients,
+        "ceiling_mib": ceiling,
+        "fits": hi * clients <= ceiling,
+        "may_not_fit": lo * clients <= ceiling < hi * clients,
+        "how": how,
+        "rests_on": ["vram_peak_1400", "vram_peak_full"],
+    }
+
+
+def _difference_from_reference(cfg: Config, imgsz: int) -> list[str]:
+    """Which settings differ from the one run whose result is recorded."""
+    mine = {"vehicles": cfg.n_vehicles, "per_vehicle": cfg.per_vehicle,
+            "rounds": cfg.rounds, "local_epochs": cfg.local_epochs,
+            "partition": cfg.partition, "strategy": cfg.strategy, "imgsz": imgsz,
+            "gpu_fraction": cfg.gpu_fraction}
+    return [f"{k}: {v} instead of {REFERENCE_RUN[k]}"
+            for k, v in mine.items() if v != REFERENCE_RUN[k]]
+
+
+def project(cfg: Config, imgsz: int | None = None) -> dict:
+    """What this configuration would cost, from numbers that were measured.
+
+    Returns projections that each name the measurements they rest on, and refusals for
+    every lever pushed outside the range those measurements cover. A refusal is not a
+    missing projection: it is the answer, and it says which measurement is missing.
+    """
+    imgsz = cfg.imgsz if imgsz is None else int(imgsz)
+    b = budget(cfg)
+    refusals = _out_of_range(cfg, imgsz)
+    floor = measurements.value("noise_floor_map50")
+    speedups = measurements.value("gpu_fraction_speedup")
+    speedup = speedups.get(f"{cfg.gpu_fraction:g}")
+
+    projections: list[dict] = []
+
+    def add(name, value, unit, how, rests_on, status="projected"):
+        projections.append({"name": name, "value": value, "unit": unit, "how": how,
+                            "rests_on": rests_on, "status": status})
+
+    add("image-visits", b["image_visits"], "visits",
+        "vehicles x images x rounds x local epochs. Counted, not measured -- this is "
+        "the definition of the budget both sides of a comparison must match",
+        [], status="exact")
+
+    if any(r["lever"] == "imgsz" for r in refusals):
+        add("wall clock", None, "s",
+            f"refused: the cost of {imgsz} px has never been timed here. Cost is "
+            f"assumed proportional to pixel count and that has only been checked at "
+            f"320 and 640", ["seconds_per_kvisit"], status="refused")
+        add("energy", None, "Wh", "refused for the same reason as the wall clock",
+            ["wh_per_kvisit"], status="refused")
+    else:
+        scale = (imgsz / 640) ** 2
+        secs = b["image_visits"] / 1000 * SECONDS_PER_KVISIT * scale
+        packed = None if speedup is None else secs / speedup
+        ratio = b["image_visits"] / (REFERENCE_RUN["vehicles"] * REFERENCE_RUN["per_vehicle"]
+                                     * REFERENCE_RUN["rounds"] * REFERENCE_RUN["local_epochs"])
+        add("wall clock", round(packed if packed is not None else secs), "s",
+            f"{b['image_visits']:,} image-visits at {SECONDS_PER_KVISIT:.2f} s per "
+            f"thousand, x{scale:.2f} for {imgsz} px"
+            + (f", / {speedup} for gpu_fraction {cfg.gpu_fraction:g}" if speedup else "")
+            + f". That is {ratio:.2f}x the reference run's budget, along a relationship "
+              f"measured at one point",
+            ["seconds_per_kvisit", "gpu_fraction_speedup"])
+        add("energy", round(b["image_visits"] / 1000 * WH_PER_KVISIT * scale, 1), "Wh",
+            "integrated from nvidia-smi power on the reference run, scaled the same way",
+            ["wh_per_kvisit"])
+
+    vram = _vram(cfg.per_vehicle, cfg.gpu_fraction) if not any(
+        r["lever"] in ("per_vehicle", "gpu_fraction") for r in refusals) else None
+    if vram is None:
+        add("peak VRAM", None, "MiB",
+            "refused: outside the shard sizes or packings VRAM was measured at",
+            ["vram_peak_1400", "vram_peak_full"], status="refused")
+    else:
+        add("peak VRAM", [vram["total_lo_mib"], vram["total_hi_mib"]], "MiB",
+            f"{vram['clients_on_the_card']} client(s) on the card; {vram['how']}",
+            vram["rests_on"])
+
+    add("smallest difference this run could resolve", floor, "mAP50",
+        "the recorded run-to-run spread. A result smaller than this is not a result, "
+        "whatever the curve looks like -- and this figure is itself a lower bound, "
+        "inferred rather than measured from repeated seeds",
+        ["noise_floor_map50"])
+
+    return {
+        "config": cfg.to_dict(),
+        "imgsz": imgsz,
+        "budget": b,
+        "projections": projections,
+        "refusals": refusals,
+        "vram": vram,
+        "warnings": warnings(cfg),
+        "reference": REFERENCE_RUN,
+        "differs_from_reference": _difference_from_reference(cfg, imgsz),
+        "imgsz_reachable": imgsz == 640,
+        "imgsz_note": "The federation trains at my-project's DEFAULT_IMAGE_SIZE of 640. "
+                      "Changing it means editing my-project/my_project/client_app.py, "
+                      "which pipeline/ is not allowed to do -- so any other value here "
+                      "is a what-if, not a setting this dashboard can apply.",
+        "accuracy_note": "No mAP is projected. One configuration's end-to-end result is "
+                         "recorded, and predicting another's from it would be a "
+                         "fabricated number with a measured number's confidence. What "
+                         "is offered instead is the distance from that recorded run and "
+                         "the size of difference this budget could resolve.",
+    }
+
+
+def _print_projection(pr: dict) -> int:
+    """The projection as text. Refusals first: they are the answer, not an omission."""
+    c = pr["config"]
+    print(f"{c['n_vehicles']} vehicles x {c['per_vehicle']} images x {c['rounds']} rounds "
+          f"x {c['local_epochs']} local epochs at {pr['imgsz']} px")
+    print()
+    for row in pr["projections"]:
+        val = row["value"]
+        if row["status"] == "refused":
+            shown = "REFUSED"
+        elif isinstance(val, list):
+            shown = f"{val[0]:,} - {val[1]:,}"
+        elif isinstance(val, int):
+            shown = f"{val:,}"
+        else:
+            shown = str(val)
+        print(f"  {row['name']:<44}{shown:>20} {row['unit']}")
+        print(f"      {row['how']}")
+        if row["rests_on"]:
+            print(f"      rests on: {', '.join(row['rests_on'])}")
+    if pr["refusals"]:
+        print()
+        print("refused, and what would lift each refusal:")
+        for r in pr["refusals"]:
+            print(f"  ! {r['lever']} = {r['asked']}, measured only at {r['measured']} "
+                  f"({r['source']})")
+            print(f"    needs: {r['needed']}")
+    if pr["differs_from_reference"]:
+        ref = pr["reference"]
+        print()
+        print(f"differs from the one recorded end-to-end run ({ref['source']}, "
+              f"{ref['holdout_mAP50']} mAP50, {ref['retained']:.3f} of its ceiling) in:")
+        for d in pr["differs_from_reference"]:
+            print(f"  - {d}")
+    if not pr["imgsz_reachable"]:
+        print()
+        print(f"  ! {pr['imgsz_note']}")
+    print()
+    print(pr["accuracy_note"])
+    for w in pr["warnings"]:
+        print(f"  ! {w}")
+    return 0
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -117,11 +382,19 @@ def main(argv=None) -> int:
     ap.add_argument("--partition", default="condition", choices=vehicles.PARTITIONS)
     ap.add_argument("--strategy", default="fedavg", choices=stages.STRATEGIES)
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--gpu-fraction", type=float, default=1.0)
+    ap.add_argument("--imgsz", type=int, default=0,
+                    help="project a resolution other than the profile's; 0 = the profile's")
+    ap.add_argument("--project", action="store_true",
+                    help="print the projection -- cost, VRAM, and what it cannot answer")
     args = ap.parse_args(argv)
 
     cfg = Config(profile=args.profile, n_vehicles=args.vehicles, rounds=args.rounds,
                  local_epochs=args.epochs, per_vehicle_override=args.per_vehicle,
-                 partition=args.partition, strategy=args.strategy, seed=args.seed)
+                 partition=args.partition, strategy=args.strategy, seed=args.seed,
+                 gpu_fraction=args.gpu_fraction)
+    if args.project:
+        return _print_projection(project(cfg, args.imgsz or None))
     p = plan(cfg)
     b = p["budget"]
 

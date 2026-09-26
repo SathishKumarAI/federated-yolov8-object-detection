@@ -21,6 +21,7 @@
     <button class="tab" role="tab" aria-selected="false" aria-controls="view-data" data-view="data">Data</button>
     <button class="tab" role="tab" aria-selected="false" aria-controls="view-metrics" data-view="metrics">Metrics</button>
     <button class="tab" role="tab" aria-selected="false" aria-controls="view-plan" data-view="plan">Plan</button>
+    <button class="tab" role="tab" aria-selected="false" aria-controls="view-simulate" data-view="simulate">Simulate</button>
     <button class="tab" role="tab" aria-selected="false" aria-controls="view-docs" data-view="docs">Docs</button>
   </div>
   <div class="spacer"></div>
@@ -308,6 +309,42 @@
       drifted out of it. A number on this dashboard with no row here is a bug.</p>
   </div>
   <div id="docsBody" class="grid"></div>
+</section>
+
+<!-- ==================================================================== SIMULATE -->
+<section id="view-simulate" class="grid" hidden role="tabpanel" aria-label="Simulate">
+  <div class="panel">
+    <h2>Configuration to project <span class="n">nothing here starts a run</span></h2>
+    <div class="row">
+      <div><label for="simVehicles">Vehicles</label>
+        <input id="simVehicles" type="number" min="1" max="12" value="6"></div>
+      <div><label for="simPerVehicle">Images per vehicle</label>
+        <input id="simPerVehicle" type="number" min="1" step="100" value="1400"></div>
+      <div><label for="simRounds">Rounds</label>
+        <input id="simRounds" type="number" min="1" value="6"></div>
+      <div><label for="simEpochs">Local epochs</label>
+        <input id="simEpochs" type="number" min="1" value="4"></div>
+    </div>
+    <div class="row" style="margin-top:var(--s3)">
+      <div><label for="simPartition">Partition</label>
+        <select id="simPartition">
+          <option value="condition">condition — non-IID</option>
+          <option value="random">random — IID control</option>
+          <option value="mixed">mixed — both</option>
+          <option value="dirichlet">dirichlet — tunable α</option>
+        </select></div>
+      <div><label for="simStrategy">Strategy</label>
+        <select id="simStrategy"><option value="fedavg">fedavg</option></select></div>
+      <div><label for="simImgsz">Image size</label>
+        <input id="simImgsz" type="number" min="32" step="32" value="640"></div>
+      <div><label for="simGpuFraction">GPU fraction per client</label>
+        <input id="simGpuFraction" type="number" min="0.05" max="1" step="0.01" value="1"></div>
+    </div>
+    <p class="hint">Change anything. A lever pushed outside the range this project
+      actually measured is <b>refused</b> rather than extrapolated — the refusal names
+      the measurement that would lift it.</p>
+  </div>
+  <div id="simBody" class="grid"></div>
 </section>
 
 <!-- ======================================================================== PLAN -->

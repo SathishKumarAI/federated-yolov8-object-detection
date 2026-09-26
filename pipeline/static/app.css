@@ -359,3 +359,16 @@ table.ledger td.num,table.ledger th{font-variant-numeric:tabular-nums}
 
 #profileVerdict li{align-items:center}
 #profileRefresh{padding:4px 10px;font-size:var(--t-xs);text-transform:none;letter-spacing:0}
+
+/* ------------------------------------------------- simulate tab (simulate.js)
+   A projection has to look like a projection. The banner is the only panel on the
+   page with a tinted ground, and a refused row is struck through rather than left
+   blank -- blank reads as "still loading". */
+.sim-banner{border-color:var(--accent-dim);background:
+  linear-gradient(0deg,color-mix(in srgb,var(--accent) 6%,var(--panel)),var(--panel))}
+.refused{font:600 var(--t-xs)/1.5 var(--mono);color:var(--bad);text-transform:uppercase;
+         letter-spacing:.06em;border:1px solid currentColor;border-radius:var(--r1);
+         padding:1px 6px}
+tr.refused-row td{opacity:.75}
+tr.refused-row td:first-child b{text-decoration:line-through;text-decoration-color:var(--bad)}
+#simAdopt{font-weight:600}

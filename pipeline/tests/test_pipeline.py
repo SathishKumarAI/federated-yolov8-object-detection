@@ -2600,3 +2600,162 @@ def test_every_dashboard_module_loads(tmp_path):
     nothing says why. Executed under node against a DOM that answers but holds nothing.
     """
     _run_js_check(tmp_path, "modules_load.mjs")
+
+
+# ------------------------------------------- projecting a run before it costs anything
+from pipeline import plan as _plan  # noqa: E402
+
+
+def _projection(**kw):
+    imgsz = kw.pop("imgsz", None)
+    return _plan.project(Config(**kw), imgsz)
+
+
+def _row(pr, name):
+    return next(r for r in pr["projections"] if r["name"] == name)
+
+
+def test_the_projection_reproduces_the_run_it_was_calibrated_on():
+    """The reference configuration must come back out as the numbers that went in.
+
+    Not a tautology: the projection scales by resolution, divides by the packing
+    speed-up and multiplies out the budget, and any one of those being wrong shows up
+    here as a run that took a different length of time than it actually did.
+    """
+    ref = _plan.REFERENCE_RUN
+    pr = _projection(profile="full", n_vehicles=ref["vehicles"],
+                     per_vehicle_override=ref["per_vehicle"], rounds=ref["rounds"],
+                     local_epochs=ref["local_epochs"], partition=ref["partition"],
+                     gpu_fraction=ref["gpu_fraction"])
+    assert pr["budget"]["image_visits"] == 201_600
+    assert _row(pr, "wall clock")["value"] == ref["seconds"]
+    assert _row(pr, "energy")["value"] == ref["wh"]
+    assert pr["differs_from_reference"] == [], pr["differs_from_reference"]
+
+
+def test_a_resolution_nobody_timed_is_refused_not_extrapolated():
+    """imgsz = 1024 is item 2 of the accuracy programme and has never been run here.
+
+    A projected wall clock for it would be pixel-count arithmetic wearing a
+    measurement's clothes -- and it is the number someone would use to decide whether
+    to spend the night on it.
+    """
+    pr = _projection(profile="full", per_vehicle_override=1400, imgsz=1024)
+    assert _row(pr, "wall clock")["status"] == "refused"
+    assert _row(pr, "wall clock")["value"] is None
+    assert _row(pr, "energy")["status"] == "refused"
+    refused = {r["lever"] for r in pr["refusals"]}
+    assert "imgsz" in refused
+    needed = next(r for r in pr["refusals"] if r["lever"] == "imgsz")["needed"]
+    assert "timed run" in needed, "a refusal must say what would lift it"
+    # And it says the value is not even reachable from this component.
+    assert pr["imgsz_reachable"] is False
+    assert "client_app.py" in pr["imgsz_note"]
+
+
+def test_a_packing_ray_was_never_run_at_is_refused():
+    """0.33, 0.5 and 1.0 are the three measured settings. 0.4 is a guess, and the
+    guess would land in the wall clock as if it were measured."""
+    pr = _projection(profile="full", per_vehicle_override=1400, gpu_fraction=0.4)
+    assert {r["lever"] for r in pr["refusals"]} == {"gpu_fraction"}
+    assert _row(pr, "peak VRAM")["status"] == "refused"
+
+
+def test_a_shard_size_outside_the_measured_range_is_refused():
+    pr = _projection(profile="full", per_vehicle_override=20000)
+    assert "per_vehicle" in {r["lever"] for r in pr["refusals"]}
+
+
+def test_vram_is_a_bracket_between_two_measurements_not_a_fitted_line():
+    """5 087 MiB at 1 400 and ~15 900 at 6 308 are not two points on a line -- the
+    300-image demo also peaks near 5 GB, so the curve is flat then steep and its shape
+    was never measured. A single interpolated number would be inventing that shape."""
+    small = _projection(profile="full", per_vehicle_override=1400)
+    assert small["vram"]["per_client_lo_mib"] == small["vram"]["per_client_hi_mib"] == 5087
+    assert small["vram"]["fits"] is True
+
+    between = _projection(profile="full", per_vehicle_override=4000)
+    v = between["vram"]
+    assert v["per_client_lo_mib"] == 5087 and v["per_client_hi_mib"] == 15900
+    assert "NOT measured" in v["how"], "the bracket must say the shape is unknown"
+
+
+def test_packing_three_clients_onto_a_full_shard_is_called_out():
+    """This is the setting that killed a run: three actors, 94.9-96.6 % of VRAM, and
+    the allocation that failed was on the host."""
+    pr = _projection(profile="full", per_vehicle_override=6308, gpu_fraction=0.33)
+    v = pr["vram"]
+    assert v["clients_on_the_card"] == 3
+    assert v["fits"] is False, "3 x 15 900 MiB cannot fit in 16 303"
+
+
+def test_no_projection_claims_an_accuracy():
+    """One configuration's end-to-end result is recorded. Projecting another's mAP from
+    it would be the most confident-looking fabricated number this page could show."""
+    pr = _projection(profile="full", per_vehicle_override=1400, rounds=3)
+    for row in pr["projections"]:
+        assert "mAP" not in row["name"] or "resolve" in row["name"], row["name"]
+    assert "No mAP is projected" in pr["accuracy_note"]
+    # What it offers instead: the size of difference the run could resolve at all.
+    assert _row(pr, "smallest difference this run could resolve")["value"] == \
+        _meas.value("noise_floor_map50")
+
+
+def test_every_projection_names_the_measurement_it_rests_on():
+    pr = _projection(profile="full", per_vehicle_override=1400)
+    known = set(_meas.BY_ID)
+    for row in pr["projections"]:
+        assert row["how"], row["name"]
+        for mid in row["rests_on"]:
+            assert mid in known, f"{row['name']} cites unknown measurement {mid!r}"
+        if row["status"] == "projected":
+            assert row["rests_on"], f"{row['name']} is projected from nothing"
+
+
+def test_the_simulate_route_projects_without_touching_the_servers_config(monkeypatch):
+    """A refused /api/run once replaced the config the Plan tab previewed. A projection
+    route that did the same would make the Control tab describe a run nobody asked for,
+    and this one has to be side-effect free to be safe to call on every keystroke."""
+    import http.client
+
+    from pipeline import server as srv
+
+    before = srv.CONFIG
+    _, httpd = _serve(monkeypatch, {"busy": False})
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", httpd.server_address[1], timeout=10)
+        conn.request("GET", "/api/simulate?vehicles=4&rounds=3&epochs=2&per_vehicle=1400"
+                            "&partition=condition&profile=full",
+                     headers={"Connection": "close"})
+        got = json.loads(conn.getresponse().read())
+        assert got["budget"]["image_visits"] == 4 * 1400 * 3 * 2
+        assert got["config"]["n_vehicles"] == 4
+        conn.close()
+        assert srv.CONFIG is before, "a projection must not become the run configuration"
+        assert srv.STATE.busy is False, "a projection must not start anything"
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+
+
+def test_the_simulate_route_refuses_a_configuration_the_run_form_would_reject(monkeypatch):
+    """Projecting a run that could never be launched is a projection of nothing."""
+    import http.client
+
+    _, httpd = _serve(monkeypatch, {"busy": False})
+    port = httpd.server_address[1]
+    try:
+        for qs, expect in [("partition=nonsense", "unknown partition"),
+                           ("strategy=nonsense", "unknown strategy"),
+                           ("gpu_fraction=2", "gpu_fraction"),
+                           ("rounds=many", "not a int")]:
+            conn = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+            conn.request("GET", "/api/simulate?" + qs, headers={"Connection": "close"})
+            resp = conn.getresponse()
+            body = json.loads(resp.read())
+            assert resp.status == 400, (qs, body)
+            assert expect in body["error"], (qs, body)
+            conn.close()
+    finally:
+        httpd.shutdown()
+        httpd.server_close()

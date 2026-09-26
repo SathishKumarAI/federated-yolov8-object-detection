@@ -12,8 +12,9 @@ import { loadDocs } from "./docs.js";
 import { loadMetrics } from "./metrics.js";
 import { pollEdge } from "./edge.js";
 import { loadMeasurements, loadProfile, renderProvenance } from "./insight.js";
+import { loadSimulation, wireSimulate } from "./simulate.js";
 
-const VIEWS = ["control", "live", "data", "metrics", "plan", "docs"];
+const VIEWS = ["control", "live", "data", "metrics", "plan", "simulate", "docs"];
 
 function showView(tab) {
   const want = tab.dataset.view;
@@ -26,6 +27,7 @@ function showView(tab) {
   // seconds of label reading, the other is only interesting when someone looks.
   if (want === "data") loadData(false);
   if (want === "plan") loadPlan();
+  if (want === "simulate") loadSimulation();
   if (want === "metrics") loadMetrics(true);
   if (want === "docs") { renderProvenance(); loadDocs(); }
   // The profile reads every client log end to end, so it is loaded on first sight of
@@ -37,6 +39,7 @@ document.querySelectorAll(".tab").forEach(t => { t.onclick = () => showView(t); 
 $("profileRefresh").onclick = () => loadProfile();
 
 wireControl(() => showView(document.querySelector('.tab[data-view=live]')));
+wireSimulate();
 enableChartCursor();
 connectEvents();
 // The measurement table first: every panel that prints a +/- or cites a source reads
