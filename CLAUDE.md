@@ -241,7 +241,7 @@ of them. Re-run the probes before believing them on 8.4.138.
 
 - Use the venv on **python.org 3.12**, not conda: Smart App Control blocks
   conda-forge's `_bz2.pyd`. See `docs/ENV_WINDOWS.md`.
-- **Windows Application Control blocks `Scriptslwr.exe`**, measured 2026-09-26: a run
+- **Windows Application Control blocks `Scripts\flwr.exe`**, measured 2026-09-26: a run
   halted at the federate stage with `[WinError 4551] An Application Control policy has
   blocked this file`. A console script is an unsigned .exe generated on this machine,
   which is what those policies stop — the same mechanism that makes conda unusable here.

@@ -328,7 +328,7 @@ _FLWR_CLI = "from flwr.cli.app import app; app()"
 
 
 def flwr_launcher() -> list[str]:
-    """How to run flwr from *this* interpreter -- as a command list, not a path.
+    r"""How to run flwr from *this* interpreter -- as a command list, not a path.
 
     Resolved next to ``sys.executable`` rather than taken from PATH. A shell a person
     types into has the venv's Scripts directory on PATH; a non-interactive one started by
@@ -342,7 +342,7 @@ def flwr_launcher() -> list[str]:
 
         [WinError 4551] An Application Control policy has blocked this file
 
-    on `Scriptslwr.exe`. Smart App Control has done this to this project before -- it is
+    on `Scripts\flwr.exe`. Smart App Control has done this to this project before -- it is
     what makes conda unusable here (`docs/ENV_WINDOWS.md`) -- and a generated console
     script is an unsigned executable produced on this machine, which is exactly what those
     policies stop. `python -c "from flwr.cli.app import app; app()"` is what the shim

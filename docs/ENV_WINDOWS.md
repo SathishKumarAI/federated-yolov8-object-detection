@@ -70,7 +70,7 @@ cd my-project
 Measured 2026-09-26. A pipeline run halted at the federate stage:
 
 ```
-[      running] federate  ...\Scriptslwr.exe run . --stream --federation-config ...
+[      running] federate  ...\Scripts\flwr.exe run . --stream --federation-config ...
 [       failed] federate  [WinError 4551] An Application Control policy has blocked this file
 HALTED at federate: [WinError 4551] An Application Control policy has blocked this file
 ```

@@ -1935,13 +1935,29 @@ def test_the_checksum_criterion_judges_one_run_not_a_pile_of_them(tmp_path):
 
 
 def test_no_document_promises_a_command_with_a_mangled_path():
-    """Twice now a backslash escape turned .\scripts\run_pipeline.ps1 into a
-    carriage return mid-path, leaving a headline command that cannot be run."""
+    r"""A backslash escape keeps eating part of a Windows path in a document.
+
+    Three times now. Twice it was `.\scripts\run_pipeline.ps1` with the `\r` collapsed into a
+    carriage return; on 2026-09-26 it was `Scripts\flwr.exe` with the `\f` collapsed into a
+    formfeed -- in the environment-trap note about that very executable. Both leave a
+    headline command nobody can run, and neither shows up in a rendered diff.
+
+    So this no longer looks for one known string. No document may contain a control
+    character at all, and the search is recursive: the formfeed landed in
+    `docs/ENV_WINDOWS.md` and a sibling in `docs/findings/`, which two flat globs missed.
+    """
     broken = b".\scripts\rrun_pipeline.ps1".replace(b"\rrun", b"\run")
-    for doc in REPO.glob("*.md"):
-        assert broken not in doc.read_bytes(), doc.name
-    for doc in (REPO / "docs").glob("*.md"):
-        assert broken not in doc.read_bytes(), doc.name
+    # Formfeed, vertical tab, backspace, bell, escape: what a collapsed \f, \v, \b, \a or
+    # \e leaves behind. Tab and newline are excluded -- both are legitimate in Markdown.
+    control = bytes([0x0c, 0x0b, 0x08, 0x07, 0x1b])
+
+    for doc in [*REPO.glob("*.md"), *(REPO / "docs").rglob("*.md")]:
+        body = doc.read_bytes()
+        assert broken not in body, doc.name
+        found = [f"0x{c:02x}" for c in control if bytes([c]) in body]
+        assert not found, (
+            f"{doc.relative_to(REPO)} contains {', '.join(found)} -- a backslash escape "
+            f"was collapsed into a control character, so a path in it is unrunnable")
 
 
 def test_a_stage_can_be_skipped_from_the_full_chain():
