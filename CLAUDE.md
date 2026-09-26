@@ -241,6 +241,12 @@ of them. Re-run the probes before believing them on 8.4.138.
 
 - Use the venv on **python.org 3.12**, not conda: Smart App Control blocks
   conda-forge's `_bz2.pyd`. See `docs/ENV_WINDOWS.md`.
+- **Never kill python by image name.** `taskkill /F /IM python.exe` matches every
+  `python.exe` on the machine. One agent clearing a stale dashboard server that way killed
+  a live `flwr run` in another session mid-round, and the only trace it left was a raylet
+  `Windows fatal exception: access violation` -- which reads like a Ray bug and was written
+  up as one before the real cause surfaced. Kill by PID. Matters whenever two sessions
+  share this machine, which is now normal.
 - **Windows Application Control blocks `Scripts\flwr.exe`**, measured 2026-09-26: a run
   halted at the federate stage with `[WinError 4551] An Application Control policy has
   blocked this file`. A console script is an unsigned .exe generated on this machine,

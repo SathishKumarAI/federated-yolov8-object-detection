@@ -86,11 +86,18 @@ budget**, not by federation.
    purpose. A pip console script is an unsigned `.exe` generated locally — the same
    mechanism that makes conda unusable here. `stages.flwr_launcher()` now returns
    `python -c "from flwr.cli.app import app; app()"`. **Do not "fix" it back to the .exe.**
-2. **Ray crashed the whole pipeline process at `--gpu-fraction 0.5`**: `Windows fatal
-   exception: access violation` in the raylet, mid-round-1, with no report written because
-   the parent died too. `--gpu-fraction 1.0` (serialised) completed. The documented 0.33
-   failure was a *host* memory error; this is a different one, and 0.5 is no longer known
-   to be safe.
+2. **A concurrent agent's `taskkill /F /IM python.exe` killed a federation mid-round.**
+   `/IM` matches *every* `python.exe` on the machine, so clearing one stale dashboard
+   server took three processes with it, one of them a live `flwr run`. **Never blanket-kill
+   an image name here; kill by PID.**
+
+   I first wrote this up as "Ray crashed at `--gpu-fraction 0.5`", on the strength of a
+   `Windows fatal exception: access violation` in the raylet in that run's log. **That was
+   wrong and the evidence says so:** the same line appears in a later arm that carried on
+   training past it, and the run with no violation at all is the one that also completed.
+   The line is intermittent Ray-on-Windows noise around `worker.disconnect`, not a cause of
+   death. `--gpu-fraction 0.5` is **not** implicated — the documented 0.33 host-memory
+   failure is a separate, real measurement and still stands.
 
 ## Next action
 
