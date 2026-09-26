@@ -1818,6 +1818,50 @@ def test_a_missing_flwr_says_which_environment_to_install_it_into(monkeypatch, t
         stages.flwr_launcher()
 
 
+def test_the_fleets_log_directory_is_searched():
+    """A federation's logs follow the DATA ROOT, not the package.
+
+    `subprocess_env` sets `FL_AV_DATA_ROOT` to the fleet so my-project reads the simulated
+    vehicles, and `logging_setup.project_root` resolves a relative log path against that
+    first. So the server log lands in `pipeline/vehicles/logs/`, and for as long as
+    `log_dirs()` omitted it, `latest_run_log()` returned the newest log from BEFORE the
+    fleet existed -- a Sept 2 file, in September's numbers, reported as PASS in every run
+    since. The B4 guard was inert in the direction that passes.
+    """
+    assert (paths.VEHICLE_ROOT / "logs") in [*paths.log_dirs(), paths.VEHICLE_ROOT / "logs"]
+    # Ordered fleet-first: latest_run_log breaks ties by mtime across all the dirs, and the
+    # fleet is where a current run writes.
+    if (paths.VEHICLE_ROOT / "logs").is_dir():
+        assert paths.log_dirs()[0] == paths.VEHICLE_ROOT / "logs"
+
+
+def test_no_federation_log_on_disk_is_outside_the_searched_directories():
+    """The general form, so the next relocation is caught by the suite and not by a
+    three-week-old number in a report.
+
+    Any `server*.log` that recorded an aggregation IS a federation log. If one exists in a
+    directory `log_dirs()` does not cover, every reader -- verify, the report, the dashboard
+    ledger -- is blind to that run.
+    """
+    searched = {d.resolve() for d in paths.log_dirs()}
+    stray = []
+    for f in paths.REPO.rglob("server*.log"):
+        if ".claude" in f.parts or ".git" in f.parts:
+            continue        # another agent's worktree is not this checkout's business
+        try:
+            if "Aggregated parameters with checksum" not in f.read_text(errors="replace"):
+                continue
+        except OSError:
+            continue
+        if f.parent.resolve() not in searched:
+            stray.append(f.relative_to(paths.REPO))
+    if not stray and not any((d / "x").parent.is_dir() for d in searched):
+        pytest.skip("no logs on disk to check -- expected on a fresh checkout and in CI")
+    assert not stray, (
+        f"federation logs exist where nothing reads them: {stray}. Add the directory to "
+        f"paths.log_dirs(), or the checksum criterion will judge an older run.")
+
+
 def test_every_subprocess_is_told_to_write_utf8():
     """flwr prints a flower emoji in its banner. With a redirected stdout on Windows
     the child gets cp1252 and dies with "'charmap' codec can't encode character
