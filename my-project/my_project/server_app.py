@@ -17,8 +17,8 @@ from flwr.server.client_manager import ClientManager
 os.environ["ULTRALYTICS_HUB"] = "0"
 from ultralytics import YOLO
 from my_project.task import download_model, should_checkpoint, IS_WINDOWS, OS_NAME
-from my_project.get_set_model import (NUM_CLASSES_MODEL_YAML, get_weights, set_weights,
-                                      warm_start_head)
+from my_project.get_set_model import (NUM_CLASSES_MODEL_YAML, get_weights,
+                                      learning_checksum, set_weights, warm_start_head)
 
 from utils.logging_setup import configure_logging
 from utils.metrics_logger import MetricsLogger, aggregate_client_metrics
@@ -115,27 +115,46 @@ def round_config(server_round: int, num_rounds: int, local_epochs: int, *,
     }
 
 
-def learning_checksum(weights) -> float:
-    """Sum of the LEARNED tensors only -- the B4 guard's arithmetic.
+def as_state_dict_dtypes(weights, reference):
+    """Cast an aggregate back to the architecture's own dtypes.
 
-    Integer buffers are excluded, and that exclusion is the whole point.
-    `num_batches_tracked` is int64 and climbs by one per optimizer step in every BatchNorm
-    layer, so with 57 of them and 88 steps a round it adds roughly +5 000 to a naive sum
-    every round, monotonically, whatever the weights do. A frozen model would still show a
-    moving checksum.
+    FedAvg's copying path divides every array by the example total, so **all** 355 arrays
+    come back float64 -- including the 57 int64 BatchNorm counters. That is not merely
+    untidy: `learning_checksum` selects floating-point arrays, so the server would start
+    counting 57 values the clients had excluded, and the round-trip identity in
+    `pipeline/roundtrip.py` would read 5 073 too high. Measured the day it was introduced:
+    published 4643.564230 against a weighted mean of -429.435242, a difference of exactly
+    57 x 89.
 
-    It did not use to matter: until 2026-09-26 the clients sent `best.pt`'s EMA, and
-    `ModelEMA.update` lerps only floating-point tensors, so every counter arrived as 0 and
-    the sum was float-only by accident. Sending the trained module -- the fix for that bug
-    -- brought the real counters with it, and would have quietly blunted the single signal
-    this project trusts most: "equal consecutive checksums mean nothing is being learned".
-
-    Consequence to state rather than hide: checksums logged before and after this change are
-    not comparable with each other. The comparison that matters is round-to-round inside one
-    run, which is what `pipeline/logparse.py` reads.
+    The aggregate of a state_dict is a state_dict. Restoring the dtypes at the point of
+    aggregation keeps the checksum, the checkpoint and the broadcast all agreeing with the
+    clients, rather than patching each of them separately.
     """
-    return float(sum(w.sum() for w in weights
-                     if w.size > 0 and w.dtype.kind == "f"))
+    out = []
+    for arr, ref in zip(weights, reference):
+        out.append(arr.astype(ref.dtype) if arr.dtype != ref.dtype else arr)
+    return out
+
+
+def evaluate_floor(fraction_evaluate: float, min_clients: int) -> int:
+    """How few clients may evaluate a round -- NOT the same number as for fit.
+
+    Flower picks `max(int(available * fraction_evaluate), min_evaluate_clients)`. This
+    project passed `min_evaluate_clients = min_clients`, and the pipeline sets
+    `min_clients = n_vehicles`, so the floor was the whole fleet and
+    `max(int(6 * 0.34), 6) = 6`. **`fraction_evaluate` could not reduce anything.** It was
+    read from run_config, logged, passed to the strategy, and inert -- the shape of silent
+    no-op this project's CLAUDE.md keeps a table of.
+
+    Measured 2026-09-26: a 2-round run at `fraction_evaluate=0.34` still performed 12
+    client self-evaluations, which is 6 clients x 2 rounds, full participation.
+
+    The fit minimum answers "how many vehicles must train for a round to be worth
+    aggregating"; the evaluate minimum answers "how many must self-score for the row in
+    metrics.csv to mean anything". Tying the second to the first was the bug. At
+    `fraction_evaluate = 1.0` this returns `min_clients`, so nothing already measured moves.
+    """
+    return max(1, min(int(min_clients), round(float(fraction_evaluate) * int(min_clients))))
 
 
 class BatchAssignmentMixin:
@@ -196,6 +215,9 @@ class BatchAssignmentMixin:
         self.server_ema = float(server_ema)
         self._ema_weights: Optional[NDArrays] = None
         self._ema_rounds = 0
+        # The architecture's own dtypes, read once from the model this server holds for
+        # checkpointing. Used to put the integer buffers back after aggregation.
+        self._reference_arrays: Optional[NDArrays] = None
         logger.info(
             f"[Server] {type(self).__name__} initialized with batch_id_range={batch_id_range}, "
             f"aggregation={type(self).__mro__[2].__name__} (proximal_mu={self.proximal_mu})"
@@ -239,6 +261,17 @@ class BatchAssignmentMixin:
         logger.debug(f"[Server] Assigned new batch_id={batch_id} to client {client_id}")
         return batch_id
     
+    def _ensure_save_model(self):
+        """The YOLO this server holds to write checkpoints from, built once.
+
+        Also the source of the architecture's dtypes, which is why it is no longer built
+        lazily inside the save: the aggregate needs its integer buffers restored on every
+        round, not only on the rounds that happen to checkpoint.
+        """
+        if self._save_model is None:
+            self._save_model = YOLO(NUM_CLASSES_MODEL_YAML).load(MODEL_PATH)
+        return self._save_model
+
     def _save_global_model(self, weights, server_round: int) -> None:
         """
         Save the aggregated global weights as a self-contained YOLO checkpoint.
@@ -249,11 +282,19 @@ class BatchAssignmentMixin:
         a checkpointing error must not abort the federation.
         """
         try:
-            if self._save_model is None:
-                self._save_model = YOLO(NUM_CLASSES_MODEL_YAML).load(MODEL_PATH)
+            self._ensure_save_model()
             if not set_weights(self._save_model.model, weights):
                 logger.error(f"[Server] Round {server_round}: set_weights failed; skipping checkpoint.")
                 return
+            # Symmetric with the client's line. The BatchNorm step counters are int64
+            # buffers that a float checksum cannot see, and the clients were measured
+            # sending 89 while the saved aggregate read 0 -- so the number is printed on
+            # both sides of the wire until that is explained.
+            sd = self._save_model.model.state_dict()
+            counters = [int(v) for k, v in sd.items() if k.endswith("num_batches_tracked")]
+            if counters:
+                logger.info(f"[Server] Round {server_round} BN counters in the model about "
+                            f"to be saved: min={min(counters)} max={max(counters)}")
             round_path = os.path.join(self.checkpoint_dir, f"global_round_{server_round}.pt")
             last_path = os.path.join(self.checkpoint_dir, "global_last.pt")
             self._save_model.save(round_path)
@@ -474,9 +515,13 @@ class BatchAssignmentMixin:
         if parameters is not None:
             # Calculate parameters checksum for verification
             weights = parameters_to_ndarrays(parameters)
+            # Put the integers back before anything reads this. See as_state_dict_dtypes.
+            if self._reference_arrays is None:
+                self._reference_arrays = get_weights(self._ensure_save_model().model)
+            weights = as_state_dict_dtypes(weights, self._reference_arrays)
             if self.server_ema > 0:
                 weights = self._apply_server_ema(weights, server_round)
-                parameters = fl.common.ndarrays_to_parameters(weights)
+            parameters = fl.common.ndarrays_to_parameters(weights)
             weights_checksum = learning_checksum(weights)
             logger.info(f"[Server] Aggregated parameters with checksum: {weights_checksum}")
 
@@ -784,10 +829,24 @@ def server_fn(context: Context):
             server_ema=server_ema,
         ),
         common_kwargs=dict(
+            # FedAvg's in-place aggregation DESTROYS integer buffers. It scales each
+            # client's array by `num_examples / total` with `np.multiply(x, f, out=x)`,
+            # and for an int64 array that truncates: 89 * 0.5 written back into int64 is
+            # 0, for any fleet larger than one. Measured 2026-09-26 -- clients logged
+            # `BN counters min=89 max=89`, the model the server was about to save logged
+            # `min=0 max=0`, and `aggregate_inplace()` called directly on two int64 89s
+            # returns 0 while `aggregate()` returns 89.0.
+            #
+            # The zeroed counter is inert for THIS model (PyTorch only divides by it when
+            # `momentum is None`, and Ultralytics sets 0.03), so nothing trained wrongly.
+            # It is still half the payload being silently corrupted in transit, which is
+            # the genre of failure this project keeps a table of, so take the copying
+            # path: ~43 MiB per client per round, which is nothing here.
+            inplace=False,
             fraction_fit=fraction_fit,            # From run_config
             fraction_evaluate=fraction_evaluate,  # From run_config
             min_fit_clients=min_clients,          # From run_config
-            min_evaluate_clients=min_clients,
+            min_evaluate_clients=evaluate_floor(fraction_evaluate, min_clients),
             min_available_clients=min_clients,    # Minimum clients needed to start FL
             on_fit_config_fn=fit_config_fn,
             on_evaluate_config_fn=fit_config_fn,

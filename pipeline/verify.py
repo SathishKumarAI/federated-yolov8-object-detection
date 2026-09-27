@@ -1,4 +1,4 @@
-"""Assert the four pass criteria. Same checks the CI simulation-smoke job uses.
+"""Assert the five pass criteria. Same checks the CI simulation-smoke job uses.
 
 Criterion 1 is the one that matters: identical round-over-round aggregate checksums
 mean the clients returned the weights they were handed and FedAvg averaged its own
@@ -9,7 +9,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-from . import logparse, paths
+from . import logparse, paths, roundtrip
 
 
 def metrics_csv() -> Path:
@@ -50,6 +50,22 @@ def check(project: Path = paths.PROJECT) -> tuple[bool, list[str]]:
     results.append(f"[{'PASS' if c4 else 'FAIL'}] checkpoints written ({len(ckpts)}: "
                    f"{', '.join(p.name for p in ckpts[:4])})")
     ok &= c4
+
+    # Criterion 5: the aggregate really is the weighted mean of what the clients sent.
+    # Criteria 1 and 2 say the numbers moved and differ; this one says the server did
+    # FedAvg's arithmetic on them. A run recorded before the client logged num_examples
+    # cannot be checked, and that is reported as a WARN rather than counted as a failure --
+    # a false alarm is the fastest way to teach someone to ignore a check.
+    rounds = roundtrip.collect()
+    if not roundtrip.checkable(rounds):
+        results.append("[WARN] round trip not checkable: this run's client logs carry no "
+                       "num_examples, so FedAvg's own weights are unknown")
+    else:
+        c5, detail = roundtrip.check(rounds)
+        results.append(f"[{'PASS' if c5 else 'FAIL'}] the aggregate is the weighted mean of "
+                       f"what the clients sent")
+        results += [f"   {line.strip()}" for line in detail]
+        ok &= c5
 
     # Not a pass criterion, but a silent-failure warning worth surfacing.
     noop = [e for f in logparse.iter_logs("client*.log")

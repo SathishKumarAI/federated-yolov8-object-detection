@@ -83,3 +83,20 @@ def test_the_image_size_is_a_property_of_the_round():
     pipeline -- and an unfair comparison one edit away."""
     assert round_config(1, 6, 4)["imgsz"] == 640
     assert round_config(3, 6, 4, imgsz=1024)["imgsz"] == 1024
+
+
+def test_the_evaluate_floor_does_not_pin_the_whole_fleet():
+    """`fraction_evaluate` was inert: Flower takes
+    `max(int(available * fraction_evaluate), min_evaluate_clients)`, and this project
+    passed `min_evaluate_clients = min_clients`, which the pipeline sets to the vehicle
+    count. So the floor WAS the fleet and the lever could not reduce anything.
+
+    Measured before the fix: a 2-round run at 0.34 still did 12 self-evaluations -- six
+    clients, both rounds, full participation."""
+    from my_project.server_app import evaluate_floor
+
+    assert evaluate_floor(1.0, 6) == 6, "unchanged when every vehicle should evaluate"
+    assert evaluate_floor(0.34, 6) == 2, "0.34 of six is two, and two is what must be asked"
+    assert evaluate_floor(0.5, 6) == 3
+    assert evaluate_floor(0.01, 6) == 1, "never zero: metrics.csv needs at least one row"
+    assert evaluate_floor(2.0, 6) == 6, "never more than the fleet"

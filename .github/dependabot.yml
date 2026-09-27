@@ -1,0 +1,44 @@
+# Dependabot, scoped to the manifests this project actually installs from.
+#
+# Until 2026-09-26 the repository carried 933 open alerts and every one of them came from
+# `Research_docs/installations/` -- four BYTE-IDENTICAL copies of a 2024-06-21 `pip freeze`
+# of somebody's conda environment, 57 lines of which were `absl-py @ file:///C:/b/...`
+# paths that existed on one machine two years ago. Nothing referenced them, nothing could
+# install them, and they drowned the two manifests that matter:
+# `my-project/pyproject.toml` and `pipeline/requirements.txt` had ZERO alerts between them.
+# The four duplicates were removed (backlog 106); this file keeps the update side pointed
+# at the real ones.
+#
+# On upgrades: this project's dependency floors were raised deliberately and every measured
+# number in it was taken on the installed versions -- ultralytics 8.4.115, flwr 1.33.0,
+# torch 2.11.0+cu128. CLAUDE.md says not to chase newer ones, so the majors that would
+# invalidate the measurements are ignored here rather than opened as PRs nobody should
+# merge. A security advisory against them still raises an alert; that is the part worth
+# hearing.
+version: 2
+updates:
+  - package-ecosystem: "pip"
+    directory: "/my-project"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    ignore:
+      # Major bumps re-open every measurement in docs/ -- see CLAUDE.md, "Upstream".
+      - dependency-name: "torch"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "ultralytics"
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
+      - dependency-name: "flwr"
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
+
+  - package-ecosystem: "pip"
+    directory: "/pipeline"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5

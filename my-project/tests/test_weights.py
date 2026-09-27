@@ -134,3 +134,57 @@ def test_the_checksum_still_moves_when_a_weight_does():
     after = [np.array([1.0001], dtype=np.float32), np.array([1], dtype=np.int64)]
 
     assert learning_checksum(before) != learning_checksum(after)
+
+
+def test_integer_buffers_survive_aggregation():
+    """FedAvg's in-place path silently zeroes every int64 buffer.
+
+    `aggregate_inplace` scales each client's array by `num_examples / total` using
+    `np.multiply(x, f, out=x)`. For an int64 array that truncates in place: 89 * 0.5
+    written back into int64 is 0 -- and it is 0 for ANY fleet larger than one, because the
+    scaling factor is always below 1.
+
+    Measured on a real 2-client round: clients logged `BN counters min=89 max=89`, and the
+    model the server was about to save logged `min=0 max=0`. `num_batches_tracked` is inert
+    for this model (PyTorch divides by it only when `momentum is None`; Ultralytics uses
+    0.03), so nothing trained wrongly -- but it is part of the payload being corrupted in
+    transit, and the server therefore asks for the copying path.
+    """
+    import numpy as np
+    from flwr.common import FitRes, Status, Code, ndarrays_to_parameters
+    from flwr.server.strategy.aggregate import aggregate, aggregate_inplace
+
+    def one(n):
+        return (None, FitRes(status=Status(Code.OK, ""), num_examples=n, metrics={},
+                             parameters=ndarrays_to_parameters(
+                                 [np.array(89, dtype=np.int64)])))
+
+    assert int(aggregate_inplace([one(1400), one(1400)])[0]) == 0, \
+        "if this ever stops being 0, flwr fixed it and `inplace=False` can go"
+    assert float(aggregate([([np.array(89, dtype=np.int64)], 1400)] * 2)[0]) == 89.0, \
+        "the copying path is the one that keeps the counter"
+
+
+def test_the_aggregate_keeps_the_architecture_dtypes():
+    """FedAvg's copying path returns every array as float64, counters included.
+
+    That breaks the round-trip identity rather than merely looking untidy: a float-only
+    checksum then counts 57 values the clients excluded. Measured the day it appeared --
+    the server published 4643.564230 against a weighted mean of -429.435242, a difference
+    of exactly 57 x 89. The aggregate of a state_dict is a state_dict.
+    """
+    import numpy as np
+
+    from my_project.get_set_model import learning_checksum
+    from my_project.server_app import as_state_dict_dtypes
+
+    reference = [np.zeros(3, dtype=np.float32), np.array(0, dtype=np.int64)]
+    aggregated = [np.array([1.5, 2.5, 3.0], dtype=np.float64),
+                  np.array(89.0, dtype=np.float64)]      # what aggregate() hands back
+
+    assert learning_checksum(aggregated) == 96.0, "the counter is being counted: 7 + 89"
+
+    restored = as_state_dict_dtypes(aggregated, reference)
+    assert [a.dtype for a in restored] == [np.dtype(np.float32), np.dtype(np.int64)]
+    assert learning_checksum(restored) == 7.0, "and now it is not"
+    assert int(restored[1]) == 89, "while the counter itself survives"

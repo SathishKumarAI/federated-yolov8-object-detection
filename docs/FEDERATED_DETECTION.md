@@ -153,7 +153,26 @@ Per client per round, at `local_epochs = 1`, measured against the trainer source
 | validation a third time | Flower's `evaluate()` → `yolo.val()`, same val split | yes — `fraction_evaluate < 1.0` | **yes** — phase 0 measured it at 13.8 % of wall clock |
 
 `fraction_evaluate` is **never set** in `server_fn`, so it defaults to 1.0: every
-client re-scores itself every round. Phase 0 measured that at **13.8 % of wall clock**,
+client re-scores itself every round.
+
+> **Fixed 2026-09-26, and it was inert for a second reason nobody had looked for.** Even
+> when set, Flower picks `max(int(available · fraction_evaluate), min_evaluate_clients)`
+> and this project passed `min_evaluate_clients = min_clients`, which the pipeline sets to
+> the vehicle count — so the floor was the whole fleet. A run at `0.34` still performed 12
+> self-evaluations, six clients twice. With `evaluate_floor()` deriving it from the
+> fraction, the same run does 4, and the profiler puts numbers on it:
+>
+> | run | self-evals | train | evaluate |
+> |---|---|---|---|
+> | floor pinned | 12 | 290.7 s | **163.7 s** |
+> | floor pinned | 12 | 302.4 s | **176.1 s** |
+> | floor lifted | 4 | 383.5 s | **96.7 s** |
+>
+> The evaluate phase falls **41 %**, ≈ 14 % of a ~500 s run, which is the 13.8 % this page
+> claimed and had never been able to take. Wall clock did *not* fall on that run: `train`
+> rose from ~295 s to 383 s under concurrent CPU load from another process on the machine,
+> and the dataloader runs on the training thread. Phase numbers isolate the lever; wall
+> clock on a busy machine does not. Phase 0 measured that at **13.8 % of wall clock**,
 spent on the metric this project already calls the flattering one. The holdout is what
 gets reported. This is the cheapest speed lever in the repo and it is one run-config
 key.
@@ -361,7 +380,7 @@ phase-3 seed spread — nothing below is claimable until a difference bigger tha
 | # | Change | Where | Cost | Why |
 |---|---|---|---|---|
 | 0 ✅ | **`plots` on the final round only** | `server_app.py` + `client_app.py` ⚠ | done | **1.19×**, measured, and it cannot change what is learned. The pictures already only survived from the last round |
-| 1 | `fraction_evaluate` as a run-config key, default < 1.0 | `server_app.py` ⚠ | one key | 13.8 % of wall clock, on a metric that is not the headline |
+| 1 ✅ | `fraction_evaluate`, reachable and no longer pinned | `server_app.py` + pipeline ⚠ | done | **measured 2026-09-26: the evaluate phase fell 163.7 s → 96.7 s, 41 %**, ≈ 14 % of wall clock — the documented figure, confirmed. It was inert twice: never sent by the pipeline, and floored at `min_evaluate_clients = min_clients` = the whole fleet |
 | 2 | `optimizer` set explicitly | `client_app.py` ⚠ | one key | until this lands, no LR experiment is running the LR it names |
 | 3 | Server-driven `lr0` + `warmup_epochs`, broadcast per round | `server_app.py` + `client_app.py` ⚠ | small | safe to share one `FitIns`: the schedule is global, unlike the B9 `batch_id`. Attacks the 0.066 mAP50 round-1 loss |
 | 4 | `mosaic` and `erasing` as run-config keys | `client_app.py` ⚠ | small | 30 % of the dataloader, and the dataloader is the bottleneck. Changes the data path, so holdout-gated |

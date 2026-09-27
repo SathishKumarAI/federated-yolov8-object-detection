@@ -44,7 +44,7 @@ like a product.
 |---|---|---|
 | 25 | **Centralised baseline run** — FL numbers mean nothing without the ceiling | ✅ 2026-08-06 |
 | 26 | **Shared holdout set** no vehicle trains on, for honest global evaluation | ✅ 2026-08-06 |
-| 27 | Freeze the backbone for round 1 while the random 13-class head settles ⚠ | P1 |
+| 27 | Freeze the backbone for round 1 while the random 13-class head settles ⚠ | ✅ 2026-09-26 — `--freeze-round1 N`, and it pins the backbone's BN statistics too |
 | 28 | Report mAP50-95 everywhere mAP50 is reported | P1 |
 | 29 | Early stopping on the global model, on the shared holdout | P2 |
 | 30 | LR schedule tuned for short local rounds (warmup is a third of a 4-epoch round) ⚠ | P1 |
@@ -59,7 +59,7 @@ like a product.
 | 39 | Checkpoint averaging / SWA across rounds | P3 |
 | 40 | Confidence calibration of the global model | P3 |
 | 41 | Failure-case gallery: worst predictions per condition | P2 |
-| 42 | Statistical significance across seeds — one run is an anecdote | P1 |
+| 42 | Statistical significance across seeds — one run is an anecdote | ✅ 2026-09-26 — `experiment --preset seeds`; the floor is ±0.0077, see `docs/NOISE_FLOOR.md` |
 | 43 | Learning-curve extrapolation to predict the value of more rounds | P3 |
 | 44 | Data-quality audit: mislabelled / empty-label images per shard | P2 |
 | 45 | Active learning: pick the next images for a vehicle by uncertainty | P3 |
@@ -163,7 +163,7 @@ installed ultralytics 8.4.115 rather than assumed.
 
 | # | Feature | P |
 |---|---|---|
-| 106 | **Delete `Research_docs/installations/requirements_history/`** — 832 of the repo's 885 Dependabot alerts come from four *byte-identical* copies of one 2024-06-21 `pip freeze`, none of them installable or referenced | P1 |
+| 106 | **Delete `Research_docs/installations/requirements_history/`** — 832 of the repo's 885 Dependabot alerts come from four *byte-identical* copies of one 2024-06-21 `pip freeze`, none of them installable or referenced | ✅ 2026-09-26 |
 
 ### 106, before anyone tries to fix it by upgrading something
 

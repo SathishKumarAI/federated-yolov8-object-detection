@@ -19,11 +19,14 @@ whole flow and visualises a simulated vehicle fleet while it runs.
 | **What does Flower × YOLO actually need, measured?** | [`docs/FEDERATED_DETECTION.md`](docs/FEDERATED_DETECTION.md) |
 | How do I run the model live on other machines? | [`docs/REALTIME_NODES.md`](docs/REALTIME_NODES.md) |
 | What should I build? | [`docs/BACKLOG_100.md`](docs/BACKLOG_100.md) |
+| **Is this actually a federation — did anything really travel?** | [`pipeline/roundtrip.py`](pipeline/roundtrip.py), and `python -m pipeline.verify` |
 | **Are the shards' pixels and labels actually what they claim?** | [`docs/DATA_VALIDATION.md`](docs/DATA_VALIDATION.md) |
 | **Why is accuracy where it is, and what do the papers say?** | [`docs/findings/2026-09-26-accuracy-findings.md`](docs/findings/2026-09-26-accuracy-findings.md) |
 | **What counts as a result, and when does that number go stale?** | [`docs/NOISE_FLOOR.md`](docs/NOISE_FLOOR.md) |
+| **Who else has built this, and what do we owe them?** | [`docs/RELATED_WORK.md`](docs/RELATED_WORK.md) |
 | How do I run any of it? | [`pipeline/README.md`](pipeline/README.md) |
 | Where did the last session stop? | [`STATUS.md`](STATUS.md) and `docs/prompts/` |
+| **What did a whole session do, and why?** | `docs/prompts/*-session-log.md` — newest [2026-09-26](docs/prompts/2026-09-26-session-log.md) |
 
 ## Where to change it
 
@@ -36,6 +39,7 @@ Open the one file that owns the thing. Do not read the package to find it.
 | Chart axes, ticks, tooltips, sparkline, the noise band | `pipeline/static/js/chart.js` |
 | How state reaches the browser, and the polling fallback | `pipeline/static/js/stream.js` |
 | Checksum ledger, per-class small multiples, round profile, provenance | `pipeline/static/js/insight.js` |
+| **What travels between server and vehicles**, and the panels that show it | `pipeline/anatomy.py`, `pipeline/static/js/anatomy.js` |
 | The projection form | `pipeline/static/js/simulate.js` |
 | The demo/help walkthrough and its steps | `pipeline/static/js/tour.js` |
 | A run lever's caveat, or which levers the form offers | `pipeline/measurements.py` `LEVER_NOTES`, `pipeline/server.py` `LEVERS` |
@@ -57,7 +61,8 @@ Open the one file that owns the thing. Do not read the package to find it.
 | Shard assignment, conditions, partitioning, quantity skew | `pipeline/vehicles.py` |
 | What a log line means | `pipeline/logparse.py` |
 | Where a round's seconds went | `pipeline/profile.py` |
-| The four pass criteria | `pipeline/verify.py` |
+| The five pass criteria | `pipeline/verify.py` |
+| **Whether the weights really made the round trip, and the aggregate is their mean** | `pipeline/roundtrip.py` |
 | The shared holdout, and scoring the global model on it | `pipeline/holdout.py` |
 | The centralised baseline, and the gap to it | `pipeline/baseline.py` |
 | What makes a fleet's shards invalid | `pipeline/validate.py` |
@@ -135,6 +140,9 @@ Read these before assuming a green run means a working one.
 | — | run succeeded, checksums identical | shard too small for the batch size: **no optimizer step happened at all** |
 | — | `metrics.csv` showed 6 308 examples | only 10 images existed; `num_examples` is FedAvg's weight |
 | — | rounds completed, checksums changed every round | clients sent the **fp16-rounded EMA of `best.pt`**, not the weights they trained. `YOLO.train()` rebinds `yolo.model` to a reloaded checkpoint, and the checkpoint holds only `deepcopy(ema).half()`. Measured: 355/355 tensors leaving the client were exactly fp16-representable, against 58/355 in the live model |
+| — | `fraction_evaluate` read, logged and passed to the strategy | **inert.** Flower takes `max(int(n · fraction_evaluate), min_evaluate_clients)` and this project passed `min_evaluate_clients = min_clients`, which the pipeline sets to the vehicle count — so the floor was the whole fleet. Measured: a 2-round run at 0.34 still did 12 self-evaluations, which is six clients twice |
+| — | `verify` PASS on the four criteria | it was reading a **three-week-old** server log: `paths.log_dirs()` did not include `pipeline/vehicles/logs`, where a federation's log actually goes |
+| — | `get_weights` sends the full `state_dict`, buffers included | **FedAvg's in-place aggregation zeroes every integer buffer.** It scales each client's array by `num_examples/total` with `np.multiply(x, f, out=x)`; for int64 that truncates, and 89 × 0.5 written back into int64 is 0 — for *any* fleet above one. Measured: clients logged `BN counters min=89 max=89`, the model the server was about to save logged `min=0 max=0`. Fixed with `inplace=False`; inert for this model (PyTorch divides by the counter only when `momentum is None`) but half the payload was being corrupted in transit |
 
 **The single most useful signal is the round-over-round aggregate checksum.** Equal
 consecutive values mean nothing is being learned, whatever the metrics say. It has a
@@ -310,7 +318,8 @@ branch dies.
 ```bash
 python -m pytest my-project/tests -q     # 31 tests
 python -m pytest pipeline/tests -q       # 130 tests
-python -m pipeline.verify                # the four pass criteria against the last run
+python -m pipeline.verify                # the five pass criteria against the last run
+python -m pipeline.roundtrip             # did the weights travel, and is the aggregate their mean
 python -m pipeline.holdout --evaluate    # the global model on data no vehicle saw
 ```
 
