@@ -6,28 +6,36 @@ Update this when you STOP working, not when you start.
 
 ## Where I stopped
 
-**Everything is on `main`.** Squash-merged as `0184a646f` through
-[PR #64](https://github.com/SathishKumarAI/federated-yolov8-object-detection/pull/64) --
-29 commits from this session and the six from 2026-09-02 that had been stranded above it.
-`main` had not moved since PR #42; the stack that STATUS has called "the largest single
-item outstanding" for two sessions is gone.
+**`main` is at `7eac9f7e8`** — PRs #64 and #65 merged, #63 closed as contained. Everything
+after that is on **`feat/proof-and-plumbing`** in
+[PR #66](https://github.com/SathishKumarAI/federated-yolov8-object-detection/pull/66),
+**all five CI checks green**, eight commits, waiting on a squash-merge.
 
-Green on `main`, checked after the merge rather than at merge time:
+The session began as "why is mAP low" and turned into an audit of the weight transport.
+**Four separate defects were found in what actually moves between the server and the
+vehicles**, and no check in the project could see any of them. The full account is in
+[`docs/prompts/2026-09-26-session-log.md`](docs/prompts/2026-09-26-session-log.md); the
+short version is below.
+
+Tests: **83 my-project + 247 pipeline = 330**, of which 244 also pass on the bare
+`pytest`+`pyyaml` interpreter CI uses. `measurements --check` 17/17.
+
+## Is the federation real? Yes, and it is now checked every run
+
+`pipeline/roundtrip.py`, wired in as **verify's fifth criterion**, asks three things of a
+run's own logs: each vehicle began the round from the aggregate the server published, each
+returned something different, and the published aggregate is the `num_examples`-weighted
+mean of what they sent. The third cannot be faked — a checksum is a *sum*, so it is
+linear:
 
 ```
-python -m pytest my-project/tests -q       80 passed
-python -m pytest pipeline/tests -q        226 passed
-python -m pipeline.measurements --check    15 of 15 records still match their source
-python -m pipeline.verify                 VERIFY: PASS
+round 1: 6 client(s), weighted mean  -563.152811686 vs aggregate  -563.153076172, 4.70e-07 OK
+round 2: 6 client(s), weighted mean -1031.702636719 vs aggregate -1031.702636719, 0.00e+00 OK
 ```
 
-All five CI checks passed, including the **19-minute federated simulation smoke on CPU**,
-which is the one that asserts the aggregate checksum changes between rounds -- so the
-transport change and the log-directory fix are validated on Linux by CI, not only here.
-
-The dashboard work came in on `feat/dashboard-2030`, built in a worktree at
-`.claude/worktrees/agent-ac52b9b8a00f0e71a`. Its content is all in `main`; the worktree and
-its branch are still on disk and can be removed whenever.
+Eight tests, four of which prove it **fails** when it should. Run it with
+`python -m pipeline.roundtrip`; a run recorded before 2026-09-26 reports `CANNOT CHECK`
+(exit 2) rather than a false alarm.
 
 ## The bug: FedAvg was not averaging what the clients trained
 
@@ -107,6 +115,24 @@ budget**, not by federation.
    death. `--gpu-fraction 0.5` is **not** implicated — the documented 0.33 host-memory
    failure is a separate, real measurement and still stands.
 
+## Three more defects in the payload, found after the levers landed
+
+| | what it looked like | what was happening |
+|---|---|---|
+| the **B4 guard** | `VERIFY: PASS` every run | it read a **three-week-old** server log. `paths.log_dirs()` never included `pipeline/vehicles/logs`, where a federation's log goes — it follows `FL_AV_DATA_ROOT`, not the package. Inert in the direction that passes |
+| **integer buffers** | `get_weights` sends the full `state_dict` | FedAvg's `aggregate_inplace` scales by `num_examples/total` with `np.multiply(x, f, out=x)`; int64 truncates, so `89 × 0.5` is **0** for any fleet above one. Clients logged 89, the server saved 0. Fixed with `inplace=False` |
+| **the fix for that** | counters restored | every array then came back float64, so the float-only checksum counted the 57 counters clients exclude — off by exactly 57 × 89. Fixed by `as_state_dict_dtypes()`: the aggregate of a state_dict is a state_dict |
+
+Counters now read `[89]` after round 1 and `[177]` after round 2 — accumulating, as they
+should. None of this changed what was trained (`num_batches_tracked` is inert unless
+`momentum is None`), but half the payload was being corrupted in transit.
+
+**`fraction_evaluate` was inert twice** — never sent by the pipeline, then floored at
+`min_evaluate_clients = min_clients` = the whole fleet. With both fixed the evaluate phase
+falls **163.7 s → 96.7 s, −41 %** (≈14 % of a run, the documented 13.8 %). Wall clock did
+not fall on that run: `train` rose under another process's CPU load, and the dataloader is
+on the training thread.
+
 ## Measured this session, after the code landed
 
 **The floor is ±0.0077, not ±0.0018.** Re-measured at the same conditions on the fixed
@@ -127,6 +153,8 @@ with a general test that no federation log may sit outside the searched director
 
 ## Next action
 
+0. **Squash-merge [PR #66](https://github.com/SathishKumarAI/federated-yolov8-object-detection/pull/66).**
+   Green on all five checks; nothing else is waiting on it.
 1. `--imgsz 1024` at 6 × 4. Largest expected effect, touches no data, and the baseline and
    holdout follow the same flag.
 2. `--freeze-round1 10`, then `--server-ema 0.7`, then `--fix-bn-from-round` at half the

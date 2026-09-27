@@ -26,6 +26,7 @@ whole flow and visualises a simulated vehicle fleet while it runs.
 | **Who else has built this, and what do we owe them?** | [`docs/RELATED_WORK.md`](docs/RELATED_WORK.md) |
 | How do I run any of it? | [`pipeline/README.md`](pipeline/README.md) |
 | Where did the last session stop? | [`STATUS.md`](STATUS.md) and `docs/prompts/` |
+| **What did a whole session do, and why?** | `docs/prompts/*-session-log.md` — newest [2026-09-26](docs/prompts/2026-09-26-session-log.md) |
 
 ## Where to change it
 
